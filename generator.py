@@ -23,63 +23,98 @@ class ConstantLayer(pl.LightningModule):
 
         return out
 
-class Conv2DMod(pl.LightningModule):
-    def __init__(self, in_chanels: int, 
-                       out_chanels: int, 
+class EqualizedLrLayer(pl.LightningModule):
+    def __init__(self, 
+                weight_shape: tuple, 
+                equalize_lr: bool = True, 
+                lr_mul: float = 1,
+                nonlinearity = 'leaky_relu') -> None:
+        """ Base class for layer with equalized LR technique 
+            Description in section 4.1 of  https://arxiv.org/abs/1710.10196
+            If you want to use eqlr just inherite from this class and use 
+            self.get_weight() method to get weights in forward
+
+        Args:
+            weight_shape (tuple): shape of a weight tensor
+            equalize_lr (bool, optional): use equalize lr. Defaults to True.
+            lr_mul (float, optional): Lerning rate multiplier. Defaults to 1.
+            nonlinearity (str, optional): Activation function, it affects He coefficient. Defaults to 'leaky_relu'.
+        """
+        super().__init__()
+
+        self.scale = 1
+        self.lr_mul = lr_mul
+        self.eps = 1e-8
+
+        # Equalized learning rate from https://arxiv.org/abs/1710.10196
+        self.weight = nn.Parameter(torch.randn(weight_shape))
+
+        if not equalize_lr:
+            nn.init.kaiming_normal_(self.weight, a=0.2, mode='fan_in', nonlinearity=nonlinearity)
+            self.scale = 1
+        else:
+            fan = nn.init._calculate_correct_fan(self.weight, 'fan_in') 
+            # gain = nn.init.calculate_gain(nonlinearity='leaky_relu', a = 0.2) # TODO: 1 in original paper! 
+            gain = 1.
+            he_coefficient = gain / math.sqrt(fan)
+            self.scale = he_coefficient * lr_mul
+
+    def get_weight(self) -> torch.Tensor:
+         # To ensure equalized learning rate from https://arxiv.org/abs/1710.10196
+        return self.weight * self.scale 
+    
+class Conv2DMod(EqualizedLrLayer):
+    def __init__(self, in_channels: int, 
+                       out_channels: int, 
                        filter_size: int, 
                        demodulate: bool = True, 
                        stride: int=1, 
                        dilation: int=1,
                        equalize_lr: bool = True,
                        lr_mul: float = 1):
-        super().__init__()
-        self.out_chanels = out_chanels
+        super().__init__(
+            weight_shape=(out_channels, in_channels, filter_size, filter_size),
+            equalize_lr = equalize_lr,
+            lr_mul=lr_mul, nonlinearity='leaky_relu')
+
+        self.out_channels = out_channels
         self.demodulate = demodulate
         self.filter_size = filter_size
         self.stride = stride
         self.dilation = dilation
-        self.scale = 1
-        self.lr_mul = lr_mul
-        self.eps = 1e-8
 
+    def _get_same_padding(self, input_size):
+        return ((input_size - 1) * (self.stride - 1) + self.dilation * (self.filter_size - 1)) // 2
+
+    def forward(self, x, style: torch.Tensor):
+        batch_size, in_channels, h, w = x.shape
         
-        # Equalized learning rate from https://arxiv.org/abs/1710.10196
-        self.weight = nn.Parameter(torch.randn((out_chanels, in_chanels, filter_size, filter_size)))
+        kernel = self.get_weight()
 
-        if not equalize_lr:
-            nn.init.kaiming_normal_(self.weight, a=0.2, mode='fan_in', nonlinearity='leaky_relu')
-        else:
-            fan = nn.init._calculate_correct_fan(self.weight, 'fan_in') 
-            # gain = nn.init.calculate_gain(nonlinearity='leaky_relu', a = 0.2) # TODO: 1 in original paper! 
-            gain = 1
-            he_coefficient = gain / math.sqrt(fan)
-            self.scale = he_coefficient * lr_mul
+        x = x.type_as(kernel)
+        style = style.type_as(kernel)
 
-    def _get_same_padding(self, size, kernel, dilation, stride):
-        return ((size - 1) * (stride - 1) + dilation * (kernel - 1)) // 2
-
-    def forward(self, x, style):
-        b, c, h, w = x.shape
+        # expand dimentions of style vectors and conv kernel to ensure broadcasting
+        expanded_style = style.view(batch_size, 1, in_channels, 1, 1)
+        expanded_kernel = self.weight.view(1, self.out_channels, in_channels, self.filter_size, self.filter_size)
         
-        kernel = self.weight * self.scale # To ensure equalized learning rate from https://arxiv.org/abs/1710.10196
-
-        expanded_style = style[:, None, :, None, None]
-        expanded_kernel = self.weight[None, :, :, :, :]
+        # modulation
         expanded_kernel *= expanded_style 
 
         if self.demodulate:
             demodulation_coefficient = torch.rsqrt((expanded_kernel ** 2).sum(dim=(2, 3, 4), keepdim=True) + self.eps) #TODO: rewrite in einops?
             expanded_kernel = expanded_kernel * demodulation_coefficient
 
-        x = x.reshape(1, -1, h, w)
-
+        # reshape to represent batch dimention as channel groups
+        # unique kernel for each object in batch 
+        x = x.view(1, -1, h, w) 
         _, _, *ws = expanded_kernel.shape
-        kernel = expanded_kernel.reshape(b * self.out_chanels, *ws)
+        kernel = expanded_kernel.reshape(batch_size * self.out_channels, *ws)
 
-        padding = self._get_same_padding(h, self.filter_size, self.dilation, self.stride)
-        x = F.conv2d(x, kernel, padding=padding, groups=b)
+        padding = self._get_same_padding(h)
+        x = F.conv2d(x, kernel, padding=padding, groups=batch_size)
 
-        x = x.reshape(-1, self.out_chanels, h, w)
+        x = x.view(batch_size, self.out_channels, h, w)
         return x
 
 class ModulatedBlock(pl.LightningModule):
