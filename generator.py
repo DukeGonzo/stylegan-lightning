@@ -62,8 +62,8 @@ class EqualizedLrLayer(pl.LightningModule):
     def get_weight(self) -> torch.Tensor:
          # To ensure equalized learning rate from https://arxiv.org/abs/1710.10196
         return self.weight * self.scale 
-    
-class Conv2DMod(EqualizedLrLayer):
+
+class ModConvBase(EqualizedLrLayer):
     def __init__(self, in_channels: int, 
                        out_channels: int, 
                        filter_size: int, 
@@ -77,6 +77,7 @@ class Conv2DMod(EqualizedLrLayer):
             equalize_lr = equalize_lr,
             lr_mul=lr_mul, nonlinearity='leaky_relu')
 
+        self.in_channels = in_channels
         self.out_channels = out_channels
         self.demodulate = demodulate
         self.filter_size = filter_size
@@ -86,17 +87,12 @@ class Conv2DMod(EqualizedLrLayer):
     def _get_same_padding(self, input_size):
         return ((input_size - 1) * (self.stride - 1) + self.dilation * (self.filter_size - 1)) // 2
 
-    def forward(self, x, style: torch.Tensor):
-        batch_size, in_channels, h, w = x.shape
-        
-        kernel = self.get_weight()
-
-        x = x.type_as(kernel)
-        style = style.type_as(kernel)
+    def modulate(self, kernel: torch.Tensor, style: torch.Tensor) -> torch.Tensor:
+        batch_size = style.shape[0]
 
         # expand dimentions of style vectors and conv kernel to ensure broadcasting
-        expanded_style = style.view(batch_size, 1, in_channels, 1, 1)
-        expanded_kernel = self.weight.view(1, self.out_channels, in_channels, self.filter_size, self.filter_size)
+        expanded_style = style.view(batch_size, 1, self.in_channels, 1, 1)
+        expanded_kernel = kernel.view(1, self.out_channels, self.in_channels, self.filter_size, self.filter_size)
         
         # modulation
         expanded_kernel *= expanded_style 
@@ -105,17 +101,91 @@ class Conv2DMod(EqualizedLrLayer):
             demodulation_coefficient = torch.rsqrt((expanded_kernel ** 2).sum(dim=(2, 3, 4), keepdim=True) + self.eps) #TODO: rewrite in einops?
             expanded_kernel = expanded_kernel * demodulation_coefficient
 
+        return expanded_kernel
+    
+class ModConv2d(ModConvBase):
+    def __init__(self, in_channels: int, 
+                       out_channels: int, 
+                       filter_size: int, 
+                       demodulate: bool = True, 
+                       stride: int=1, 
+                       dilation: int=1,
+                       equalize_lr: bool = True,
+                       lr_mul: float = 1):
+        super().__init__(
+            in_channels, 
+            out_channels, 
+            filter_size, 
+            demodulate, 
+            stride, 
+            dilation,
+            equalize_lr,
+            lr_mul)
+
+
+    def forward(self, x, style: torch.Tensor):
+        batch_size, c , h, w = x.shape
+
+        assert c == self.in_channels
+        
+        kernel = self.get_weight()
+
+        x = x.type_as(kernel)
+        style = style.type_as(kernel)
+
+        expanded_kernel = self.modulate(kernel, style)
+
         # reshape to represent batch dimention as channel groups
         # unique kernel for each object in batch 
         x = x.view(1, -1, h, w) 
         _, _, *ws = expanded_kernel.shape
-        kernel = expanded_kernel.reshape(batch_size * self.out_channels, *ws)
+        kernel = expanded_kernel.view(batch_size * self.out_channels, *ws)
 
         padding = self._get_same_padding(h)
         x = F.conv2d(x, kernel, padding=padding, groups=batch_size)
 
-        x = x.view(batch_size, self.out_channels, h, w)
-        return x
+        return x.view(batch_size, self.out_channels, h, w)
+
+class ModTransposedConv2d(ModConvBase):
+    def __init__(self, in_channels: int, 
+                       out_channels: int, 
+                       filter_size: int, 
+                       demodulate: bool = True, 
+                       stride: int=1, 
+                       dilation: int=1,
+                       equalize_lr: bool = True,
+                       lr_mul: float = 1):
+        super().__init__(
+            in_channels, 
+            out_channels, 
+            filter_size, 
+            demodulate, 
+            stride, 
+            dilation,
+            equalize_lr,
+            lr_mul)
+
+
+    def forward(self, x, style: torch.Tensor):
+        batch_size, c , h, w = x.shape
+
+        assert c == self.in_channels
+        
+        kernel = self.get_weight()
+
+        x = x.type_as(kernel)
+        style = style.type_as(kernel)
+
+        expanded_kernel = self.modulate(kernel, style)
+
+        expanded_kernel = expanded_kernel.transpose(1, 2) 
+
+        x = x.view(1, -1, h, w) 
+        _, _, *ws = expanded_kernel.shape
+        kernel = expanded_kernel.view(batch_size * self.in_channels, *ws)
+
+        x = F.conv_transpose2d(x, kernel, padding=0, stride=2, groups=batch_size) # TODO: remove hardcode, calculate padding properly
+        return x.view(batch_size, self.out_channels, h, w)
 
 class ModulatedBlock(pl.LightningModule):
     def __init__(self, 
