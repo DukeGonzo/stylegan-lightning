@@ -28,16 +28,16 @@ class EqualizedLrLayer(pl.LightningModule):
                 weight_shape: tuple, 
                 equalize_lr: bool = True, 
                 lr_mul: float = 1,
-                nonlinearity = 'leaky_relu') -> None:
+                nonlinearity = 'leaky_relu') -> None:  # TODO: remove nonlinearity arg?
         """ Base class for layer with equalized LR technique 
             Description in section 4.1 of  https://arxiv.org/abs/1710.10196
-            If you want to use eqlr just inherite from this class and use 
+            If you want to use eqlr just inherit from this class and use 
             self.get_weight() method to get weights in forward
 
         Args:
             weight_shape (tuple): shape of a weight tensor
             equalize_lr (bool, optional): use equalize lr. Defaults to True.
-            lr_mul (float, optional): Lerning rate multiplier. Defaults to 1.
+            lr_mul (float, optional): Learning rate multiplier. Defaults to 1.
             nonlinearity (str, optional): Activation function, it affects He coefficient. Defaults to 'leaky_relu'.
         """
         super().__init__()
@@ -216,6 +216,30 @@ class ModulatedBlock(pl.LightningModule):
 
         return x, skip
 
+class EqualizedLinear(EqualizedLrLayer):
+    def __init__(self, 
+                in_features: int, 
+                out_features: int, 
+                bias: bool = True, 
+                bias_init: float = 0.0, 
+                equalize_lr: bool = True,
+                lr_mul: float = 1, ) -> None:
+        super().__init__(
+            weight_shape=(out_features, in_features),
+            equalize_lr = equalize_lr,
+            lr_mul=lr_mul, 
+            nonlinearity='leaky_relu')
+
+        if bias:
+            self.bias = nn.Parameter(torch.zeros(out_features).fill_(bias_init))
+
+        else:
+            self.bias = None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        w = self.get_weight()
+        bias = self.bias * self.lr_mul if self.bias is not None else None
+        return  F.linear(x, w, bias=bias)
 
 class SynthesisNetwork(pl.LightningModule):
     def __init__(self, 
