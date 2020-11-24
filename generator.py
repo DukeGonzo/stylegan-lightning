@@ -2,6 +2,7 @@ import math
 from typing import Any, Optional, List, Tuple, Union
 import numpy as np
 import torch
+from torch._C import short
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
@@ -238,6 +239,107 @@ class BilinearFilter(pl.LightningModule):
 
         return x
 
+class StyleConvBase(pl.LightningDataModule):
+    def __init__(self, 
+                 latent_size: int,
+                 in_channels: int,
+                 out_channels: int,
+                 equalize_lr: bool = True,
+                 lr_mul: float = 1,
+                 ) -> None:
+        super().__init__()
+
+        self.latent2style = EqualizedLinear(latent_size, 
+                                            in_channels, 
+                                            bias_init=1.0, 
+                                            equalize_lr=equalize_lr, 
+                                            lr_mul=lr_mul)
+        self.inject_noise = NoiseInjection()
+        self.bias = nn.Parameter(torch.zeros(1, out_channels, 1, 1, 1))
+
+    def bias_and_activation(self, x: torch.Tensor) -> torch.Tensor:
+        bias = self.bias
+        scale = 2 * 0.5 # TODO: check it
+
+        return F.leaky_relu(x + bias, negative_slope=0.2) * scale
+
+
+class StyleConv(StyleConvBase):
+    def __init__(self, 
+                 latent_size: int,
+                 in_channels: int,
+                 out_channels: int,
+                 filter_size: int, 
+                 equalize_lr: bool = True,
+                 lr_mul: float = 1,
+                 ) -> None:
+        super().__init__(latent_size, 
+                        in_channels, 
+                        out_channels, 
+                        equalize_lr, 
+                        lr_mul)
+
+        self.conv = ModConv2d(in_channels, out_channels, filter_size, stride=1)
+        self.inject_noise = NoiseInjection()
+
+
+    def forward(self, x: torch.Tensor, latent: torch.Tensor, noise: torch.Tensor) -> torch.Tensor:
+        
+        style = self.latent2style.forward(latent)
+        x = self.conv.forward(x, style)
+        x = self.inject_noise.forward(x, noise)
+        return self.bias_and_activation(x)
+
+class StyleConvUp(StyleConvBase):
+    def __init__(self, 
+                 latent_size: int,
+                 in_channels: int,
+                 out_channels: int,
+                 filter_size: int, 
+                 equalize_lr: bool = True,
+                 lr_mul: float = 1,
+                 ) -> None:
+        super().__init__(latent_size, 
+                        in_channels, 
+                        out_channels, 
+                        equalize_lr, 
+                        lr_mul)
+
+        self.conv = ModTransposedConv2d(in_channels, out_channels, filter_size, stride=2)
+        self.filter_bilinear = BilinearFilter(out_channels)
+        self.inject_noise = NoiseInjection()
+
+
+    def forward(self, x: torch.Tensor, latent: torch.Tensor, noise: torch.Tensor) -> torch.Tensor:        
+        style = self.latent2style.forward(latent)
+        x = self.conv.forward(x, style)
+        x = self.filter_bilinear.forward(x)
+        x = self.inject_noise.forward(x, noise)
+        return self.bias_and_activation(x)
+
+
+class ToRgb(StyleConvBase):
+    def __init__(self, 
+                 latent_size: int,
+                 in_channels: int,
+                 equalize_lr: bool = True,
+                 lr_mul: float = 1,
+                 ) -> None:
+        super().__init__(latent_size, 
+                        in_channels, 
+                        3, 
+                        equalize_lr, 
+                        lr_mul)
+
+        self.conv = ModConv2d(in_channels, out_channels = 3, demodulate = False, filter_size = 1, stride=1)
+
+
+    def forward(self, x: torch.Tensor, latent: torch.Tensor, noise: torch.Tensor) -> torch.Tensor:        
+        style = self.latent2style.forward(latent)
+        x = self.conv.forward(x, style)
+        x += self.bias
+        return 
+
 class ModulatedBlock(pl.LightningModule):
     def __init__(self, 
                 in_channels: int, 
@@ -252,32 +354,25 @@ class ModulatedBlock(pl.LightningModule):
         self.in_channels = in_channels
         self.out_channels = out_channels
         
-        # 1
-        self.latent2style_1 = EqualizedLinear(latent_size, in_channels, bias_init=1.0)
-        self.conv_1 = ModTransposedConv2d(in_channels, out_channels, 3, stride=2)
-        self.bilinear_1 = BilinearFilter(out_channels)
-        self.inject_noise_1 = NoiseInjection()
-
-        # 2
-        self.latent2style_2 = EqualizedLinear(latent_size, out_channels, bias_init=1.0)
-        self.conv_2 = ModConv2d(out_channels, out_channels, 3, stride=1)
-        self.inject_noise_2 = NoiseInjection()
-
-        # 3
-        self.latent2style_3 = EqualizedLinear(latent_size, 3, bias_init=1.0)
-        self.to_rgb = ModConv2d(out_channels, out_channels = 3, demodulate = False, filter_size = 1, stride=1)
-        self.bilinear_2 = BilinearFilter(out_channels, upsample_factor=2)
+        self.style_conv_up = StyleConvUp(latent_size, in_channels, out_channels, filter_size = 3)
+        self.style_conv = StyleConv(latent_size, out_channels, out_channels, filter_size = 3)
+        self.to_rgb = ToRgb(latent_size, out_channels)
+        self.upscale_shorctcut = BilinearFilter(3, upsample_factor=2)
 
 
-    def forward(self, x: torch.Tensor, skip: torch.Tensor, styles: torch.Tensor, noise: torch.Tensor, **kwargs): #TODO: styles should be a tensor?
+
+    def forward(self, x: torch.Tensor, shortcut: torch.Tensor, latents: torch.Tensor, noise: torch.Tensor):
         # assert len(noise) == 2
         # assert noise.size() == 2
         
-        x = self.conv_1(x, styles[:, 0], noise=noise[:, 0])
-        x = self.conv_2(x, styles[:, 1], noise=noise[:, 1])
-        skip = self.to_rgb(x, styles[:, 2], skip)
+        x = self.style_conv_up.forward(x, latent = latents[:, 0], noise = noise[:, 0])
+        x = self.style_conv.forward(x, latent = latents[:, 1], noise = noise[:, 1])
+        
+        shortcut = self.upscale_shorctcut.forward(shortcut)
+        rgb = self.to_rgb(x, latents[:, 2])
+        rgb += shortcut
 
-        return x, skip
+        return x, rgb
 
 class EqualizedLinear(EqualizedLrLayer):
     def __init__(self, 
@@ -310,8 +405,8 @@ class NoiseInjection(nn.Module):
 
         self.weight = nn.Parameter(torch.zeros(1))
 
-    def forward(self, image: torch.Tensor, noise: torch.Tensor) -> torch.Tensor:
-        return image + self.weight * noise
+    def forward(self, x: torch.Tensor, noise: torch.Tensor) -> torch.Tensor:
+        return x + self.weight * noise
 
 class SynthesisNetwork(pl.LightningModule):
     def __init__(self, 
