@@ -1,5 +1,5 @@
 import math
-from typing import Any, Optional, List
+from typing import Any, Optional, List, Tuple, Union
 import numpy as np
 import torch
 import torch.nn as nn
@@ -187,12 +187,62 @@ class ModTransposedConv2d(ModConvBase):
         x = F.conv_transpose2d(x, kernel, padding=0, stride=2, groups=batch_size) # TODO: remove hardcode, calculate padding properly
         return x.view(batch_size, self.out_channels, h, w)
 
+
+
+class BilinearFilter(pl.LightningModule):
+    def __init__(self, channels: int, kernel: Union[List[float], np.ndarray] = [1.,3.,3.,1.], upsample_factor: Optional[int] = None):
+        super().__init__()
+
+        self.channels = channels
+        self.upsample_factor = upsample_factor
+
+        kernel = self._make_kernel(kernel)
+
+        if self.upsample_factor is not None:
+            kernel *= (self.upsample_factor ** 2)
+
+        self.register_buffer('kernel', kernel[None, None, :, :].repeat((1, self.channels, 1, 1))) # TODO: maybe it's a not good idea
+
+    @staticmethod
+    def _make_kernel(kernel):
+        kernel = torch.tensor(kernel)
+
+        if kernel.ndim == 1:
+            kernel = kernel[None, :] * kernel[:, None]
+
+        kernel /= kernel.sum()
+
+        return kernel
+
+    def _calculate_padding(self) -> Tuple[int]: # TODO: CHECK! It could easily be wrong! 
+        factor = self.upsample_factor if self.upsample_factor is not None else 1
+        padding = self.kernel.shape[2] - factor
+
+        pad0 = (padding + 1) // 2 + factor - 1
+        pad1 = padding // 2
+
+        return pad0, pad1
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        kernel = self.kernel
+        _, in_c, in_h, in_w = x.shape
+
+        if self.upsample_factor is not None:
+            x = x.view(-1, in_c, in_h, 1, in_w, 1)
+            x = F.pad(x, [0, self.upsample_factor - 1, 0, 0, 0, self.upsample_factor - 1])
+            x = x.view(-1, in_c, in_h * self.upsample_factor, in_w * self.upsample_factor)
+
+        pad0, pad1 = self._calculate_padding()
+        x = F.pad(x, [pad0, pad1, pad0, pad1])
+        x = F.conv2d(x, kernel)
+
+        return x
+
 class ModulatedBlock(pl.LightningModule):
     def __init__(self, 
                 in_channels: int, 
                 out_channels: int,
                 latent_size: int,
-                blur_kernel: list = [1, 3, 3, 1],
                 **kwargs):
         super().__init__()
 
@@ -201,10 +251,23 @@ class ModulatedBlock(pl.LightningModule):
 
         self.in_channels = in_channels
         self.out_channels = out_channels
+        
+        # 1
+        self.latent2style_1 = EqualizedLinear(latent_size, in_channels, bias_init=1.0)
+        self.conv_1 = ModTransposedConv2d(in_channels, out_channels, 3, stride=2)
+        self.bilinear_1 = BilinearFilter(out_channels)
+        self.inject_noise_1 = NoiseInjection()
 
-        self.conv_1 = StyledConv(in_channels, out_channels, 3, latent_size, upsample=True, blur_kernel=blur_kernel)
-        self.conv_2 = StyledConv(out_channels, out_channels, 3, latent_size, upsample=False, blur_kernel=blur_kernel)
-        self.to_rgb = ToRGB(out_channels, latent_size)
+        # 2
+        self.latent2style_2 = EqualizedLinear(latent_size, out_channels, bias_init=1.0)
+        self.conv_2 = ModConv2d(out_channels, out_channels, 3, stride=1)
+        self.inject_noise_2 = NoiseInjection()
+
+        # 3
+        self.latent2style_3 = EqualizedLinear(latent_size, 3, bias_init=1.0)
+        self.to_rgb = ModConv2d(out_channels, out_channels = 3, demodulate = False, filter_size = 1, stride=1)
+        self.bilinear_2 = BilinearFilter(out_channels, upsample_factor=2)
+
 
     def forward(self, x: torch.Tensor, skip: torch.Tensor, styles: torch.Tensor, noise: torch.Tensor, **kwargs): #TODO: styles should be a tensor?
         # assert len(noise) == 2
@@ -240,6 +303,15 @@ class EqualizedLinear(EqualizedLrLayer):
         w = self.get_weight()
         bias = self.bias * self.lr_mul if self.bias is not None else None
         return  F.linear(x, w, bias=bias)
+
+class NoiseInjection(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        self.weight = nn.Parameter(torch.zeros(1))
+
+    def forward(self, image: torch.Tensor, noise: torch.Tensor) -> torch.Tensor:
+        return image + self.weight * noise
 
 class SynthesisNetwork(pl.LightningModule):
     def __init__(self, 
