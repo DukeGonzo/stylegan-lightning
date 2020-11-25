@@ -49,7 +49,8 @@ class SynthesisNetwork(pl.LightningModule):
         super().__init__()
         
         log_res = np.log2(resolution)
-        assert log_res > 1 and log_res * (log_res -1) == 0, f'resolution must be a power of 2.'
+        assert log_res > 1 and (log_res * 10) % 10 == 0, f'resolution must be a power of 2.'
+        log_res = int(log_res)
         self.resolution = resolution
 
         assert latent_size > 0, f'Latent size must be 1 or greater'
@@ -80,7 +81,7 @@ class SynthesisNetwork(pl.LightningModule):
 
         for i in range(3, log_res + 1):
             out_channels = self.channels[2 ** i]
-            self.blocks.append(ModulatedBlock(in_channels, out_channels, latent_size, self.blur_kernel))
+            self.blocks.append(ModulatedBlock(in_channels, out_channels, latent_size    ))
 
     def make_noise(self,  batch_size: int) -> List[torch.Tensor]:
         """ Make spatial noise for each layer

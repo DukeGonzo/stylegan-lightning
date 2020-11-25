@@ -232,7 +232,7 @@ class BilinearFilter(pl.LightningModule):
 
         return x
 
-class StyleConvBase(pl.LightningDataModule):
+class StyleConvBase(pl.LightningModule):
     def __init__(self, 
                  latent_size: int,
                  in_channels: int,
