@@ -91,7 +91,7 @@ class ModConvBase(EqualizedLrLayer):
         expanded_kernel = kernel.view(1, self.out_channels, self.in_channels, self.filter_size, self.filter_size)
         
         # modulation
-        expanded_kernel *= expanded_style 
+        expanded_kernel = expanded_kernel * expanded_style 
 
         if self.demodulate:
             demodulation_coefficient = torch.rsqrt((expanded_kernel ** 2).sum(dim=(2, 3, 4), keepdim=True) + self.eps) #TODO: rewrite in einops?
@@ -178,9 +178,10 @@ class ModTransposedConv2d(ModConvBase):
 
         x = x.view(1, -1, h, w) 
         _, _, *ws = expanded_kernel.shape
-        kernel = expanded_kernel.view(batch_size * self.in_channels, *ws)
+        kernel = expanded_kernel.reshape(batch_size * self.in_channels, *ws) #SUSPICIOUS 
 
         x = F.conv_transpose2d(x, kernel, padding=0, stride=2, groups=batch_size) # TODO: remove hardcode, calculate padding properly
+        _,_, h,w = x.shape
         return x.view(batch_size, self.out_channels, h, w)
 
 class BilinearFilter(pl.LightningModule):
@@ -248,7 +249,7 @@ class StyleConvBase(pl.LightningModule):
                                             equalize_lr=equalize_lr, 
                                             lr_mul=lr_mul)
         self.inject_noise = NoiseInjection()
-        self.bias = nn.Parameter(torch.zeros(1, out_channels, 1, 1, 1))
+        self.bias = nn.Parameter(torch.zeros(1, out_channels, 1, 1))
 
     def bias_and_activation(self, x: torch.Tensor) -> torch.Tensor:
         bias = self.bias
@@ -303,7 +304,7 @@ class StyleConvUp(StyleConvBase):
         self.inject_noise = NoiseInjection()
 
 
-    def forward(self, x: torch.Tensor, latent: torch.Tensor, noise: torch.Tensor) -> torch.Tensor:        
+    def forward(self, x: torch.Tensor, latent: torch.Tensor, noise: torch.Tensor) -> torch.Tensor:       
         style = self.latent2style.forward(latent)
         x = self.conv.forward(x, style)
         x = self.filter_bilinear.forward(x)
@@ -327,12 +328,12 @@ class ToRgb(StyleConvBase):
         self.conv = ModConv2d(in_channels, out_channels = 3, demodulate = False, filter_size = 1, stride=1)
 
 
-    def forward(self, x: torch.Tensor, latent: torch.Tensor, noise: torch.Tensor) -> torch.Tensor:        
+    def forward(self, x: torch.Tensor, latent: torch.Tensor) -> torch.Tensor:        
         style = self.latent2style.forward(latent)
         x = self.conv.forward(x, style)
         x += self.bias
         return 
-        
+
 class EqualizedLinear(EqualizedLrLayer):
     def __init__(self, 
                 in_features: int, 

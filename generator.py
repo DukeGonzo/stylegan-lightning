@@ -29,8 +29,8 @@ class ModulatedBlock(pl.LightningModule):
         # assert len(noise) == 2
         # assert noise.size() == 2
         
-        x = self.style_conv_up.forward(x, latent = latents[:, 0], noise = noise[:, 0])
-        x = self.style_conv.forward(x, latent = latents[:, 1], noise = noise[:, 1])
+        x = self.style_conv_up.forward(x, latent = latents[:, 0], noise = noise[0])
+        x = self.style_conv.forward(x, latent = latents[:, 1], noise = noise[1])
         
         shortcut = self.upscale_shortcut.forward(shortcut)
         rgb = self.to_rgb(x, latents[:, 2])
@@ -110,13 +110,13 @@ class SynthesisNetwork(pl.LightningModule):
         if noise is None:
             noise = self.make_noise(batch_size)
 
-        x = self.constant(latent_vectors)
+        x = self.constant.forward(batch_size)
         x = self.style_conv.forward(x, latent_vectors[:, 0], noise=noise[0])
         rgb = self.to_rgb.forward(x, latent_vectors[:, 1])
 
         i = 1
         for block in self.blocks:
-            x, rgb = block(x, rgb, latent_vectors[: i:i+3], noise[i:i+2])
+            x, rgb = block(x, rgb, latent_vectors[:, i:i+3], noise[i:i+2])
             i += 2
 
         return rgb
