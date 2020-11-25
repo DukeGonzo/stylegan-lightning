@@ -188,8 +188,6 @@ class ModTransposedConv2d(ModConvBase):
         x = F.conv_transpose2d(x, kernel, padding=0, stride=2, groups=batch_size) # TODO: remove hardcode, calculate padding properly
         return x.view(batch_size, self.out_channels, h, w)
 
-
-
 class BilinearFilter(pl.LightningModule):
     def __init__(self, channels: int, kernel: Union[List[float], np.ndarray] = [1.,3.,3.,1.], upsample_factor: Optional[int] = None):
         super().__init__()
@@ -357,8 +355,7 @@ class ModulatedBlock(pl.LightningModule):
         self.style_conv_up = StyleConvUp(latent_size, in_channels, out_channels, filter_size = 3)
         self.style_conv = StyleConv(latent_size, out_channels, out_channels, filter_size = 3)
         self.to_rgb = ToRgb(latent_size, out_channels)
-        self.upscale_shorctcut = BilinearFilter(3, upsample_factor=2)
-
+        self.upscale_shortcut = BilinearFilter(3, upsample_factor=2)
 
 
     def forward(self, x: torch.Tensor, shortcut: torch.Tensor, latents: torch.Tensor, noise: torch.Tensor):
@@ -368,7 +365,7 @@ class ModulatedBlock(pl.LightningModule):
         x = self.style_conv_up.forward(x, latent = latents[:, 0], noise = noise[:, 0])
         x = self.style_conv.forward(x, latent = latents[:, 1], noise = noise[:, 1])
         
-        shortcut = self.upscale_shorctcut.forward(shortcut)
+        shortcut = self.upscale_shortcut.forward(shortcut)
         rgb = self.to_rgb(x, latents[:, 2])
         rgb += shortcut
 
@@ -445,8 +442,8 @@ class SynthesisNetwork(pl.LightningModule):
 
         self.constant = ConstantLayer(in_channels, 4) # TODO: remove hardcode
 
-        self.conv1 = StyledConv(in_channels, in_channels, 3, latent_size, blur_kernel=self.blur_kernel)
-        self.to_rgb1 = ToRGB(in_channels, latent_size, upsample=False)
+        self.style_conv = StyleConv(latent_size, in_channels, in_channels, filter_size = 3)
+        self.to_rgb = ToRgb(latent_size, in_channels)
 
         for i in range(3, log_res + 1):
             out_channels = self.channels[2 ** i]
@@ -480,12 +477,12 @@ class SynthesisNetwork(pl.LightningModule):
             noise = self.make_noise(batch_size)
 
         x = self.constant(latent_vectors)
-        x = self.conv1(x, latent_vectors[:, 0], noise=noise[0])
-        skip = self.to_rgb1(x, latent_vectors[:, 1])
+        x = self.style_conv.forward(x, latent_vectors[:, 0], noise=noise[0])
+        rgb = self.to_rgb.forward(x, latent_vectors[:, 1])
 
         i = 1
         for block in self.blocks:
-            x, skip = block(x, skip, latent_vectors[: i:i+3], noise[i:i+2])
+            x, rgb = block(x, rgb, latent_vectors[: i:i+3], noise[i:i+2])
             i += 2
 
-        return skip
+        return rgb
