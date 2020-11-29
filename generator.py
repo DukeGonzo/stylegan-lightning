@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import pytorch_lightning as pl
 import layers
+from layers import UpsampleZeros
 
 class ModulatedBlock(pl.LightningModule):
     def __init__(self, 
@@ -22,7 +23,8 @@ class ModulatedBlock(pl.LightningModule):
         self.style_conv_up = layers.StyleConvUp(latent_size, in_channels, out_channels, filter_size = 3)
         self.style_conv = layers.StyleConv(latent_size, out_channels, out_channels, filter_size = 3)
         self.to_rgb = layers.ToRgb(latent_size, out_channels)
-        self.upscale_shortcut = layers.BilinearFilter(3, upsample_factor=2)
+        self.upscale_shortcut = nn.Sequential(layers.UpsampleZeros(), layers.BilinearFilter(3, scaling_factor=2))
+
 
 
     def forward(self, x: torch.Tensor, shortcut: torch.Tensor, latents: torch.Tensor, noise: torch.Tensor):
@@ -81,7 +83,8 @@ class SynthesisNetwork(pl.LightningModule):
 
         for i in range(3, log_res + 1):
             out_channels = self.channels[2 ** i]
-            self.blocks.append(ModulatedBlock(in_channels, out_channels, latent_size    ))
+            self.blocks.append(ModulatedBlock(in_channels, out_channels, latent_size))
+            in_channels = out_channels  
 
     def make_noise(self,  batch_size: int) -> List[torch.Tensor]:
         """ Make spatial noise for each layer
@@ -95,7 +98,7 @@ class SynthesisNetwork(pl.LightningModule):
 
         for i, map_size in enumerate(self.channels.keys()):
             for _ in range(2):
-                noise = torch.randn(batch_size, 1, map_size, map_size)
+                noise = torch.randn(batch_size, 1, map_size, map_size, device=self.device)
                 # noise.type_as(latent_vectors, self.device) # TODO: not sure about this stuff 
                 noises.append(noise)
 
@@ -113,7 +116,6 @@ class SynthesisNetwork(pl.LightningModule):
         x = self.constant.forward(batch_size)
         x = self.style_conv.forward(x, latent_vectors[:, 0], noise=noise[0])
         rgb = self.to_rgb.forward(x, latent_vectors[:, 1])
-
         i = 1
         for block in self.blocks:
             x, rgb = block(x, rgb, latent_vectors[:, i:i+3], noise[i:i+2])

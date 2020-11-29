@@ -24,7 +24,8 @@ class EqualizedLrLayer(pl.LightningModule):
                 weight_shape: tuple, 
                 equalize_lr: bool = True, 
                 lr_mul: float = 1,
-                nonlinearity = 'leaky_relu') -> None:  # TODO: remove nonlinearity arg?
+                nonlinearity = 'leaky_relu', 
+                batch_dim = False) -> None:  # TODO: remove nonlinearity arg?
         """ Base class for layer with equalized LR technique 
             Description in section 4.1 of  https://arxiv.org/abs/1710.10196
             If you want to use eqlr just inherit from this class and use 
@@ -46,10 +47,11 @@ class EqualizedLrLayer(pl.LightningModule):
         self.weight = nn.Parameter(torch.randn(weight_shape))
 
         if not equalize_lr:
-            nn.init.kaiming_normal_(self.weight, a=0.2, mode='fan_in', nonlinearity=nonlinearity)
+            # TODO REMOVE batch_dim! 
+            nn.init.kaiming_normal_(self.weight[0] if batch_dim else self.weight, a=0.2, mode='fan_in', nonlinearity=nonlinearity)
             self.scale = 1
         else:
-            fan = nn.init._calculate_correct_fan(self.weight, 'fan_in') 
+            fan = nn.init._calculate_correct_fan(self.weight[0] if batch_dim else self.weight, 'fan_in') 
             # gain = nn.init.calculate_gain(nonlinearity='leaky_relu', a = 0.2) # TODO: 1 in original paper! 
             gain = 1.
             he_coefficient = gain / math.sqrt(fan)
@@ -69,9 +71,9 @@ class ModConvBase(EqualizedLrLayer):
                        equalize_lr: bool = True,
                        lr_mul: float = 1):
         super().__init__(
-            weight_shape=(out_channels, in_channels, filter_size, filter_size),
+            weight_shape=(1, out_channels, in_channels, filter_size, filter_size),
             equalize_lr = equalize_lr,
-            lr_mul=lr_mul, nonlinearity='leaky_relu')
+            lr_mul=lr_mul, nonlinearity='leaky_relu', batch_dim=True)
 
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -88,16 +90,16 @@ class ModConvBase(EqualizedLrLayer):
 
         # expand dimentions of style vectors and conv kernel to ensure broadcasting
         expanded_style = style.view(batch_size, 1, self.in_channels, 1, 1)
-        expanded_kernel = kernel.view(1, self.out_channels, self.in_channels, self.filter_size, self.filter_size)
+        # expanded_kernel = kernel.view(1, self.out_channels, self.in_channels, self.filter_size, self.filter_size)
         
         # modulation
-        expanded_kernel = expanded_kernel * expanded_style 
+        kernel = kernel * expanded_style 
 
         if self.demodulate:
-            demodulation_coefficient = torch.rsqrt((expanded_kernel ** 2).sum(dim=(2, 3, 4), keepdim=True) + self.eps) #TODO: rewrite in einops?
-            expanded_kernel = expanded_kernel * demodulation_coefficient
+            demodulation_coefficient = torch.rsqrt((kernel ** 2).sum(dim=(2, 3, 4), keepdim=True) + self.eps) #TODO: rewrite in einops?
+            kernel = kernel * demodulation_coefficient
 
-        return expanded_kernel
+        return kernel
     
 class ModConv2d(ModConvBase):
     def __init__(self, in_channels: int, 
@@ -129,13 +131,13 @@ class ModConv2d(ModConvBase):
         x = x.type_as(kernel)
         style = style.type_as(kernel)
 
-        expanded_kernel = self.modulate(kernel, style)
+        kernel = self.modulate(kernel, style)
 
         # reshape to represent batch dimention as channel groups
         # unique kernel for each object in batch 
         x = x.view(1, -1, h, w) 
-        _, _, *ws = expanded_kernel.shape
-        kernel = expanded_kernel.view(batch_size * self.out_channels, *ws)
+        _, _, *ws = kernel.shape
+        kernel = kernel.view(batch_size * self.out_channels, *ws)
 
         padding = self._get_same_padding(h)
         x = F.conv2d(x, kernel, padding=padding, groups=batch_size)
@@ -184,19 +186,41 @@ class ModTransposedConv2d(ModConvBase):
         _,_, h,w = x.shape
         return x.view(batch_size, self.out_channels, h, w)
 
+class UpsampleZeros(pl.LightningModule):
+    def __init__(self, upsample_factor: int = 2):
+        super().__init__()
+
+        self.upsample_factor = upsample_factor
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        _, in_c, in_h, in_w = x.shape
+
+        x = x.view(-1, in_c, in_h, 1, in_w, 1)
+        x = F.pad(x, [0, self.upsample_factor - 1, 0, 0, 0, self.upsample_factor - 1])
+        x = x.view(-1, in_c, in_h * self.upsample_factor, in_w * self.upsample_factor)
+
+        return x
+
 class BilinearFilter(pl.LightningModule):
-    def __init__(self, channels: int, kernel: Union[List[float], np.ndarray] = [1.,3.,3.,1.], upsample_factor: Optional[int] = None):
+    def __init__(self, channels: int, 
+                       kernel: Union[List[float], np.ndarray] = [1.,3.,3.,1.], 
+                       scaling_factor: Optional[int] = None,
+                       padding: Union[str, int] = 'SAME'):
         super().__init__()
 
         self.channels = channels
-        self.upsample_factor = upsample_factor
+        self.scaling_factor = scaling_factor if scaling_factor is not None else 1
 
         kernel = self._make_kernel(kernel)
 
-        if self.upsample_factor is not None:
-            kernel *= (self.upsample_factor ** 2)
+        kernel *= (self.scaling_factor ** 2)
 
-        self.register_buffer('kernel', kernel[None, None, :, :].repeat((1, self.channels, 1, 1))) # TODO: maybe it's a not good idea
+        self.register_buffer('kernel', kernel[None, None, :, :].repeat((self.channels, 1, 1, 1))) # TODO: maybe it's a not good idea
+
+        if padding == 'SAME':
+            self.pad0, self.pad1 = self._calculate_padding()
+        else:
+            self.pad0, self.pad1 = padding, padding
 
     @staticmethod
     def _make_kernel(kernel):
@@ -210,7 +234,7 @@ class BilinearFilter(pl.LightningModule):
         return kernel
 
     def _calculate_padding(self) -> Tuple[int]: # TODO: CHECK! It could easily be wrong! 
-        factor = self.upsample_factor if self.upsample_factor is not None else 1
+        factor = self.scaling_factor if self.scaling_factor is not None else 1
         padding = self.kernel.shape[2] - factor
 
         pad0 = (padding + 1) // 2 + factor - 1
@@ -220,16 +244,10 @@ class BilinearFilter(pl.LightningModule):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         kernel = self.kernel
-        _, in_c, in_h, in_w = x.shape
-
-        if self.upsample_factor is not None:
-            x = x.view(-1, in_c, in_h, 1, in_w, 1)
-            x = F.pad(x, [0, self.upsample_factor - 1, 0, 0, 0, self.upsample_factor - 1])
-            x = x.view(-1, in_c, in_h * self.upsample_factor, in_w * self.upsample_factor)
-
-        pad0, pad1 = self._calculate_padding()
+        pad0, pad1 = self.pad0, self.pad1
+       
         x = F.pad(x, [pad0, pad1, pad0, pad1])
-        x = F.conv2d(x, kernel)
+        x = F.conv2d(x, kernel, groups=self.channels)
 
         return x
 
@@ -248,12 +266,11 @@ class StyleConvBase(pl.LightningModule):
                                             bias_init=1.0, 
                                             equalize_lr=equalize_lr, 
                                             lr_mul=lr_mul)
-        self.inject_noise = NoiseInjection()
         self.bias = nn.Parameter(torch.zeros(1, out_channels, 1, 1))
 
     def bias_and_activation(self, x: torch.Tensor) -> torch.Tensor:
         bias = self.bias
-        scale = 2 * 0.5 # TODO: check it
+        scale = 2 ** 0.5 # TODO: check it
 
         return F.leaky_relu(x + bias, negative_slope=0.2) * scale
 
@@ -300,7 +317,7 @@ class StyleConvUp(StyleConvBase):
                         lr_mul)
 
         self.conv = ModTransposedConv2d(in_channels, out_channels, filter_size, stride=2)
-        self.filter_bilinear = BilinearFilter(out_channels)
+        self.filter_bilinear = BilinearFilter(out_channels, scaling_factor= 2, padding=1)
         self.inject_noise = NoiseInjection()
 
 
@@ -332,7 +349,7 @@ class ToRgb(StyleConvBase):
         style = self.latent2style.forward(latent)
         x = self.conv.forward(x, style)
         x += self.bias
-        return 
+        return x
 
 class EqualizedLinear(EqualizedLrLayer):
     def __init__(self, 
