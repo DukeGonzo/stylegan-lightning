@@ -1,4 +1,5 @@
 import math
+from math import hypot
 from typing import Any, Optional, List, Tuple, Union
 import numpy as np
 import torch
@@ -384,3 +385,51 @@ class NoiseInjection(nn.Module):
 
     def forward(self, x: torch.Tensor, noise: torch.Tensor) -> torch.Tensor:
         return x + self.weight * noise
+
+class EqualizedConv(EqualizedLrLayer):
+    def __init__(self, in_channels: int, 
+                       out_channels: int, 
+                       kernel_size: int, 
+                       stride: int=1,
+                       padding: Union[str, int] = 0, 
+                       dilation: int=1,
+                       bias: bool = True,
+                       equalize_lr: bool = True,
+                       lr_mul: float = 1):
+        super().__init__(
+            weight_shape=(out_channels, in_channels, kernel_size, kernel_size),
+            equalize_lr = equalize_lr,
+            lr_mul=lr_mul, nonlinearity='leaky_relu', batch_dim=False)
+
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.dilation = dilation
+        self.padding = padding
+        self.bias = None
+        
+        if bias:
+            self.bias = nn.Parameter(torch.zeros(out_channels))
+
+
+    def _get_same_padding(self, input_size):
+        return ((input_size - 1) * (self.stride - 1) + self.dilation * (self.kernel_size - 1)) // 2
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        kernel = self.get_weight()
+        _, _, h, w = x.shape
+
+        if self.padding == 'SAME':
+            padding = self._get_same_padding(h)
+        else:
+            padding = self.padding 
+
+        x = F.conv2d(x, 
+                     weight = kernel, 
+                     bias = self.bias,
+                     stride=self.stride,
+                     padding=padding,
+                     dilation = self.dilation
+                    )
+        
