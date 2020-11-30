@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
 import layers
+from layers import EqualizedLinear
 
 class ModulatedBlock(pl.LightningModule):
     def __init__(self, 
@@ -243,3 +244,35 @@ class CriticBlock(pl.LightningModule):
 
         return (x + shortcut) / math.sqrt(2)
             
+class MappingNetwork(pl.LightningModule):
+    def __init__(self,
+                  latent_size: int = 512,
+                  style_size: int = 512,
+                  state_size: int = 512,
+                  num_layers: int = 8,
+                  label_size: int = 0,
+                  lr_mul: float = 1
+                ):
+        super().__init__()
+
+        layers = []
+
+        in_channels = latent_size
+        for i in range(0, num_layers):
+            if i == num_layers - 1:
+                linear_layer = EqualizedLinear(in_channels, style_size, lr_mul=lr_mul)
+            else:
+                linear_layer = EqualizedLinear(in_channels, state_size, lr_mul=lr_mul)
+            layers.append(linear_layer)
+            layers.append(nn.LeakyReLU(negative_slope=0.2))
+    
+            in_channels = state_size
+
+        self.layers = nn.Sequential(layers)
+
+    def forward(self, x: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        return self.layers.forward(x)
+
+        
+
+                  
