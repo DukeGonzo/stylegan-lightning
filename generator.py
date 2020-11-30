@@ -10,8 +10,7 @@ class ModulatedBlock(pl.LightningModule):
     def __init__(self, 
                 in_channels: int, 
                 out_channels: int,
-                latent_size: int,
-                **kwargs):
+                latent_size: int):
         super().__init__()
 
         assert in_channels >= 1
@@ -97,6 +96,10 @@ class SynthesisNetwork(pl.LightningModule):
         noises = []
 
         for i, map_size in enumerate(self.channels.keys()):
+            
+            if map_size > self.resolution:
+                break
+
             for _ in range(2):
                 noise = torch.randn(batch_size, 1, map_size, map_size, device=self.device)
                 # noise.type_as(latent_vectors, self.device) # TODO: not sure about this stuff 
