@@ -432,4 +432,4 @@ class EqualizedConv(EqualizedLrLayer):
                      padding=padding,
                      dilation = self.dilation
                     )
-        
+        return x

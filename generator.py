@@ -255,9 +255,16 @@ class MappingNetwork(pl.LightningModule):
                 ):
         super().__init__()
 
-        layers = []
+        self.label_size = label_size
 
         in_channels = latent_size
+
+        if label_size > 0:
+            self.embed_label = EqualizedLinear(label_size, latent_size, lr_mul=lr_mul, bias=False)
+            in_channels *= 2
+
+        layers = []
+        
         for i in range(0, num_layers):
             if i == num_layers - 1:
                 linear_layer = EqualizedLinear(in_channels, style_size, lr_mul=lr_mul)
@@ -270,7 +277,11 @@ class MappingNetwork(pl.LightningModule):
 
         self.layers = nn.Sequential(layers)
 
-    def forward(self, x: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, labels: Optional[torch.Tensor]) -> torch.Tensor:
+        if labels is not None and self.label_size > 0:
+            label_embedding = self.embed_label(labels)
+            x = torch.cat([x, label_embedding], dim=-1)
+        
         return self.layers.forward(x)
 
         
