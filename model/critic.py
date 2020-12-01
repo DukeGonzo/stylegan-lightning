@@ -1,4 +1,3 @@
-
 import math
 from typing import Optional, List
 import numpy as np
