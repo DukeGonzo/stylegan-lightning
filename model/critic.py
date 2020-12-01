@@ -58,6 +58,8 @@ class CriticNetwork(pl.LightningModule):
         
         self.blocks = nn.Sequential(block_sequence)
 
+        self.add_std_channel = layers.AddStdChannel()
+
         self.conv_final = nn.Sequential(
                  layers.EqualizedConv(in_channels=in_channels+1, 
                                       out_channels=self.channels[4],
@@ -67,8 +69,6 @@ class CriticNetwork(pl.LightningModule):
                  nn.LeakyReLU(negative_slope=self._leaky_relu_slope)
                  )
 
-        self.stddev_group = 4
-        self.stddev_feat = 1
 
         self.head = nn.Sequential(
             layers.EqualizedLinear(self.channels[4] * 4 * 4, self.channels[4]),
@@ -79,22 +79,9 @@ class CriticNetwork(pl.LightningModule):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.conv.forward(x)
         x = self.blocks.forward(x)
-
-        # TODO: extract to separate layer ########################
-        out = x
-        batch_size, channel, height, width = out.shape
-        group = min(batch_size, self.stddev_group)
-        stddev = out.view(
-            group, -1, self.stddev_feat, channel // self.stddev_feat, height, width
-        )
-        stddev = torch.sqrt(stddev.var(0, unbiased=False) + 1e-8)
-        stddev = stddev.mean([2, 3, 4], keepdims=True).squeeze(2)
-        stddev = stddev.repeat(group, 1, height, width)
-        out = torch.cat([out, stddev], 1)
-        #############################################
-
-        x = self.conv_final.forward(out)
-        x = x.view(batch_size, -1)
+        x =  self.add_std_channel.forward(x)
+        x = self.conv_final.forward(x)
+        x = torch.flatten(x, start_dim=1)
         x = self.head.forward(x)
 
         return x

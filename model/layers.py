@@ -433,3 +433,21 @@ class EqualizedConv(EqualizedLrLayer):
                      dilation = self.dilation
                     )
         return x
+
+class AddStdChannel(pl.LightningModule):
+    def __init__(self, stddev_group: int = 4, stddev_feat: int = 1) -> None:
+        super().__init__()
+
+        self.stddev_group = stddev_group
+        self.stddev_feat = stddev_feat
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        batch_size, channel, height, width = x.shape
+        group = min(batch_size, self.stddev_group)
+        stddev = x.view(
+            group, -1, self.stddev_feat, channel // self.stddev_feat, height, width
+        )
+        stddev = torch.sqrt(stddev.var(0, unbiased=False) + 1e-8)
+        stddev = stddev.mean([2, 3, 4], keepdims=True).squeeze(2)
+        stddev = stddev.repeat(group, 1, height, width)
+        return torch.cat([x, stddev], 1)
