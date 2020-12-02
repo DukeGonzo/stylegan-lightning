@@ -1,5 +1,7 @@
-from typing import Optional
 from itertools import chain
+import math
+from typing import Optional
+
 
 import torch
 from torch import optim, nn
@@ -12,10 +14,18 @@ from model.critic import CriticNetwork
 from model.mapping_network import MappingNetwork
 
 class GanTask(pl.LightningModule):
-    def __init__(self
+    def __init__(self,
+                gamma: float,
+                ppl_reg_every: int,
+                ppl_weight: float,
                 ):
         super().__init__()
-        self.gamma = 0.01 # TODO: Add as parameter, check the value
+        self.gamma = gamma # TODO: check the value
+        self.ppl_reg_every = ppl_reg_every
+        self.ppl_weight = ppl_weight
+
+        self._mean_path_length = 0
+
         self.mapping_net = MappingNetwork(latent_size = 512, state_size= 512, style_size = 512, label_size = 2, lr_mul = 0.001)
         self.synthesis_net = SynthesisNetwork(resolution=512, latent_size=512, channel_multiplier=1)
         self.critic_net = CriticNetwork(resolution=512, label_size=2, channel_multiplier=1)
@@ -25,7 +35,23 @@ class GanTask(pl.LightningModule):
         latent_vector = self.mapping_net.forward(z, labels)
         latent_vector = torch.repeat_interleave(latent_vector[:, :, None], 16, dim=1)
 
-        return self.synthesis_net.forward(latent_vector)
+        return self.synthesis_net.forward(latent_vector), latent_vector
+
+    def ppl_regularization(self, fake_img: torch.Tensor, latents: torch.Tensor, decay: float=0.01) -> torch.Tensor:
+        mean_path_length = self._mean_path_length
+
+        noise = torch.randn_like(fake_img) / math.sqrt(fake_img.shape[2] * fake_img.shape[3])
+        grad, = autograd.grad(outputs=(fake_img * noise).sum(), inputs=latents, create_graph=True)
+        path_lengths = torch.sqrt(grad.pow(2).sum(2).mean(1))
+
+        path_mean = mean_path_length + decay * (path_lengths.mean() - mean_path_length)
+
+        path_penalty = (path_lengths - path_mean).pow(2).mean()
+
+        # TODO: maybe this side effect is not a good idea
+        self._mean_path_length = path_mean.detach()
+
+        return path_penalty, path_lengths
 
     @staticmethod
     def non_saturating_gan_loss(fake_scores: torch.Tensor, real_scores: torch.Tensor) -> torch.Tensor:
@@ -43,8 +69,6 @@ class GanTask(pl.LightningModule):
         grad_penalty =  torch.sum(grad_real.pow(2), dim=(1,2,3))
 
         return grad_penalty.mean()
-
-    # def path_len_regularizer(self, ):
 
     def configure_optimizers(self):
          
@@ -66,7 +90,7 @@ class GanTask(pl.LightningModule):
         z = z.type_as(real_images)
 
         # generate fakes and scores
-        fake_images = self.forward(z, labels)
+        fake_images, latents = self.forward(z, labels)
         real_scores = self.critic_net.forward(real_images)
         fake_scores = self.critic_net.forward(fake_images)
 
@@ -77,7 +101,11 @@ class GanTask(pl.LightningModule):
         r1_penalty = self.r1_penalty(real_scores, real_images)
         critic_loss = critic_loss + self.gamma * r1_penalty
 
-        # TODO: CRITICAL ADD PERCEPTUAL PATH LEN REGULARIZER!!!!!!!!!!!!!!!
+        # add ppl penalty
+        if batch_idx % self.ppl_reg_every == 0:
+            path_loss, path_lengths = self.ppl_regularization(fake_images, latents)
+
+            generator_loss = generator_loss + self.ppl_weight * self.ppl_reg_every * path_loss
 
         # get optimizers 
         (generator_opt, critic_opt) = self.optimizers()
@@ -90,8 +118,3 @@ class GanTask(pl.LightningModule):
         self.manual_backward(critic_loss, critic_opt)
         critic_opt.step()
         critic_opt.zero_grad()
-
-
-
-    
-
