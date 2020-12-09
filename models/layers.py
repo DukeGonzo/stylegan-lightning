@@ -451,3 +451,12 @@ class AddStdChannel(pl.LightningModule):
         stddev = stddev.mean([2, 3, 4], keepdims=True).squeeze(2)
         stddev = stddev.repeat(group, 1, height, width)
         return torch.cat([x, stddev], 1)
+
+class ScaledLeakyReLU(nn.LeakyReLU):
+    def __init__(self, negative_slope: float, inplace: bool = False, scale: Optional[float] = math.sqrt(2)) -> None:
+        super().__init__(negative_slope=negative_slope, inplace=inplace)
+
+        self.scale = scale
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return super().forward(x) * self.scale

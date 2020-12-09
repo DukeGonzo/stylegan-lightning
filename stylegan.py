@@ -9,9 +9,9 @@ from torch import autograd
 from torch.nn import functional as F
 import pytorch_lightning as pl
 
-from model.generator import SynthesisNetwork
-from model.critic import CriticNetwork
-from model.mapping_network import MappingNetwork
+from models.generator import SynthesisNetwork
+from models.critic import CriticNetwork
+from models.mapping_network import MappingNetwork
 
 class GanTask(pl.LightningModule):
     def __init__(self,
@@ -92,7 +92,7 @@ class GanTask(pl.LightningModule):
         # generate fakes and scores
         fake_images, latents = self.forward(z, labels)
         real_scores = self.critic_net.forward(real_images)
-        fake_scores = self.critic_net.forward(fake_images)
+        fake_scores = self.critic_net.forward(fake_images.detach())
 
         # get losses
         critic_loss, generator_loss = self.non_saturating_gan_loss(fake_scores, real_scores)
