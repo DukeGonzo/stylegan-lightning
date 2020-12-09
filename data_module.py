@@ -5,8 +5,7 @@ from glob2 import glob
 import numpy as np
 from PIL import Image as pim
 import pytorch_lightning as pl
-import torch
-from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
+from torch.utils.data import DataLoader, WeightedRandomSampler
 import torchvision
 from torchvision import transforms
 from torchvision.datasets import ImageFolder
@@ -21,13 +20,13 @@ class DataModule(pl.LightningDataModule):
                        batch_size: int, 
                        resolution: int,
                        balanced_sampling: bool,
-                       dump_on_disk: bool,
-                       dump_path: Optional[str] = None):
+                       number_of_workers: int = 4):
         super().__init__()
         self.batch_size = batch_size
         self.resolution = resolution
-        self.dump_on_disk = dump_on_disk
-        self.dump_path = dump_path
+        self.number_of_workers = number_of_workers
+        # self.dump_on_disk = dump_on_disk
+        # self.dump_path = dump_path
         self.balanced_sampling = balanced_sampling
 
         self._transforms = transforms.Compose(
@@ -42,24 +41,24 @@ class DataModule(pl.LightningDataModule):
         assert os.path.exists(data_dir), f'No such dir {data_dir}'
         self.data_dir = data_dir
 
-    def prepare_data(self): # TODO: drop it?
-        if os.path.exists(self.dump_path):
-            pass
+    # def prepare_data(self): # TODO: drop it?
+    #     if os.path.exists(self.dump_path):
+    #         pass
 
-        dirs = glob(self.data_dir)
-        os.mkdir(self.dump_path)
+    #     dirs = glob(self.data_dir)
+    #     os.mkdir(self.dump_path)
 
-        for dir in dirs:
-            dir_name = dir.split('/')[-1]
-            os.mkdir(f'{self.dump_path}/{dir_name}')
-            image_files = glob(dir)
+    #     for dir in dirs:
+    #         dir_name = dir.split('/')[-1]
+    #         os.mkdir(f'{self.dump_path}/{dir_name}')
+    #         image_files = glob(dir)
 
-            for file in image_files:
-                fname = file.split('/')[-1]
-                pimage = pim.open(file)
-                pimage = pimage.resize((self.resolution, self.resolution))
-                pimage = pimage.convert('RGB')
-                pimage.save(f'{self.dump_path}/{dir_name}/{fname}')
+    #         for file in image_files:
+    #             file_name = file.split('/')[-1]
+    #             pimage = pim.open(file)
+    #             pimage = pimage.resize((self.resolution, self.resolution))
+    #             pimage = pimage.convert('RGB')
+    #             pimage.save(f'{self.dump_path}/{dir_name}/{file_name}')
     
 
     def setup(self, stage=None):
@@ -81,13 +80,8 @@ class DataModule(pl.LightningDataModule):
         sampler = WeightedRandomSampler(weights, len(weights))
         self.sampler = sampler
 
-
-        # self.mnist_test = MNIST(self.data_dir, train=False)
-        # mnist_full = MNIST(self.data_dir, train=True)
-        # self.mnist_train, self.mnist_val = random_split(mnist_full, [55000, 5000])
-
     def train_dataloader(self):
-        return DataLoader(self.dataset, batch_size=self.batch_size, sampler=self.sampler, num_workers=4)
+        return DataLoader(self.dataset, batch_size=self.batch_size, sampler=self.sampler, num_workers=self.number_of_workers)
 
     def val_dataloader(self):
         raise NotImplementedError()

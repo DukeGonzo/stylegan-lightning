@@ -51,6 +51,8 @@ class SynthesisNetwork(pl.LightningModule):
         assert log_res > 1 and (log_res * 10) % 10 == 0, f'resolution must be a power of 2.'
         log_res = int(log_res)
         self.resolution = resolution
+        self.num_layers = log_res * 2 - 2
+
 
         assert latent_size > 0, f'Latent size must be 1 or greater'
         self.latent_size = latent_size

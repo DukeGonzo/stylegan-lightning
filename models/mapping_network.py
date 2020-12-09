@@ -8,8 +8,8 @@ from . import layers
 
 class MappingNetwork(pl.LightningModule):
     def __init__(self,
+                  input_size: int = 512,
                   latent_size: int = 512,
-                  style_size: int = 512,
                   state_size: int = 512,
                   num_layers: int = 8,
                   label_size: int = 0,
@@ -20,12 +20,13 @@ class MappingNetwork(pl.LightningModule):
 
         self.label_size = label_size
         self.normalize_z = normalize_z
+        self.input_size = input_size
 
-        in_channels = latent_size
+        in_channels = input_size
 
         if label_size > 0:
             # self.embed_label = layers.EqualizedLinear(label_size, latent_size, lr_mul=lr_mul, bias=False)
-            self.embed_label = torch.nn.Linear(label_size, latent_size, bias=False)
+            self.embed_label = torch.nn.Linear(label_size, input_size, bias=False)
             torch.nn.init.normal_(self.embed_label.weight)
             in_channels *= 2
 
@@ -33,7 +34,7 @@ class MappingNetwork(pl.LightningModule):
         
         for i in range(0, num_layers):
             if i == num_layers - 1:
-                linear_layer = layers.EqualizedLinear(in_channels, style_size, lr_mul=lr_mul)
+                linear_layer = layers.EqualizedLinear(in_channels, latent_size, lr_mul=lr_mul)
             else:
                 linear_layer = layers.EqualizedLinear(in_channels, state_size, lr_mul=lr_mul)
             linear_layers.append(linear_layer)

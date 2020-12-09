@@ -1,6 +1,7 @@
 from itertools import chain
 import math
 from typing import Optional
+import random
 
 
 import torch
@@ -26,16 +27,26 @@ class GanTask(pl.LightningModule):
 
         self._mean_path_length = 0
 
-        self.mapping_net = MappingNetwork(latent_size = 512, state_size= 512, style_size = 512, label_size = 2, lr_mul = 0.001)
+        self.mapping_net = MappingNetwork(input_size = 512, state_size= 512, latent_size = 512, label_size = 2, lr_mul = 0.001)
         self.synthesis_net = SynthesisNetwork(resolution=512, latent_size=512, channel_multiplier=1)
         self.critic_net = CriticNetwork(resolution=512, label_size=2, channel_multiplier=1)
 
+    def generate_latents(self, batch_size: int, labels: Optional[torch.Tensor]) -> torch.Tensor:
+        # sample noise
+        z = torch.randn(batch_size, self.mapping_net.input_size) 
+        z = z.type_as(self.synthesis_net.style_conv.bias) #TODO: not sure about this gonnokod
 
-    def forward(self, z: torch.Tensor, labels: Optional[torch.Tensor]) -> torch.Tensor:
-        latent_vector = self.mapping_net.forward(z, labels)
-        latent_vector = torch.repeat_interleave(latent_vector[:, :, None], 16, dim=1)
+        w = self.mapping_net.forward(z, labels)
+        return torch.repeat_interleave(w[:, :, None], self.synthesis_net.num_layers, dim=1)
 
-        return self.synthesis_net.forward(latent_vector), latent_vector
+    def forward(self, batch_size: int, labels: Optional[torch.Tensor], mix_prob: float = 0.9) -> torch.Tensor:
+        w_plus = self.generate_latents(batch_size, labels)
+
+        if mix_prob > 0 and random.random() < mix_prob: 
+            w_plus_ = self.generate_latents(batch_size, labels) # TODO: consider to put random labels and use mixup in discriminator
+            w_plus = self.mix_latents(w_plus, w_plus_) # TODO: consider more radical mixing
+
+        return self.synthesis_net.forward(w_plus), w_plus
 
     def ppl_regularization(self, fake_img: torch.Tensor, latents: torch.Tensor, decay: float=0.01) -> torch.Tensor:
         mean_path_length = self._mean_path_length
@@ -82,17 +93,19 @@ class GanTask(pl.LightningModule):
         
         return [generator_opt, critic_opt], [gen_scheduler, critic_scheduler]
 
+    def mix_latents(self, w: torch.Tensor, w2: torch.Tensor) -> torch.Tensor:
+        layer_num = w.shape[1]
+        index = torch.randint(1, layer_num, 1)
+        return torch.cat([w[:, :index], w2[:, index:]], dim=1)
+
     def training_step(self, batch, batch_idx, optimizer_idx):
         real_images, labels = batch
-
-        # sample noise
-        z = torch.randn(real_images.shape[0], 512) # TODO: 512 to parameters
-        z = z.type_as(real_images)
+        batch_size = real_images.shape[0]
 
         # generate fakes and scores
-        fake_images, latents = self.forward(z, labels)
+        fake_images, latents = self.forward(batch_size, labels)
         real_scores = self.critic_net.forward(real_images)
-        fake_scores = self.critic_net.forward(fake_images.detach())
+        fake_scores = self.critic_net.forward(fake_images)
 
         # get losses
         critic_loss, generator_loss = self.non_saturating_gan_loss(fake_scores, real_scores)
@@ -102,7 +115,7 @@ class GanTask(pl.LightningModule):
         critic_loss = critic_loss + self.gamma * r1_penalty
 
         # add ppl penalty
-        if batch_idx % self.ppl_reg_every == 0:
+        if batch_idx % self.ppl_reg_every == 0: # TODO: Check it! Rosinality line 258. For some reasons guy zeroing grads and making extra step
             path_loss, path_lengths = self.ppl_regularization(fake_images, latents)
 
             generator_loss = generator_loss + self.ppl_weight * self.ppl_reg_every * path_loss
@@ -110,10 +123,19 @@ class GanTask(pl.LightningModule):
         # get optimizers 
         (generator_opt, critic_opt) = self.optimizers()
 
+        
         # make optimization steps
+        self.critic_net.requires_grad_(False)
+        self.synthesis_net.requires_grad_(True)
+        self.mapping_net.requires_grad_(True)
+
         self.manual_backward(generator_loss, generator_opt)
         generator_opt.step()
         generator_opt.zero_grad()
+
+        self.critic_net.requires_grad_(True)
+        self.synthesis_net.requires_grad_(False)
+        self.mapping_net.requires_grad_(False)
 
         self.manual_backward(critic_loss, critic_opt)
         critic_opt.step()
