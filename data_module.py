@@ -2,6 +2,7 @@ import os
 from typing import Optional 
 from glob2 import glob
 
+import torch.nn.functional as F
 import numpy as np
 from PIL import Image as pim
 import pytorch_lightning as pl
@@ -62,7 +63,8 @@ class DataModule(pl.LightningDataModule):
     
 
     def setup(self, stage=None):
-        self.dataset = im_dataset = ImageFolder(root=self.data_dir, transform=self._transforms)
+        self.dataset = im_dataset = ImageFolder(root=self.data_dir, 
+        transform=self._transforms)
 
         label_ids = im_dataset.class_to_idx.values()
         targets = np.array(im_dataset.targets)

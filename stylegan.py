@@ -17,12 +17,14 @@ from models.mapping_network import MappingNetwork
 class GanTask(pl.LightningModule):
     def __init__(self,
                 gamma: float,
-                ppl_reg_every: int,
-                ppl_weight: float,
+                ppl_reg_every: int = 4,
+                penalize_d_every: int =16,
+                ppl_weight: float = 2,
                 ):
         super().__init__()
         self.gamma = gamma # TODO: check the value
         self.ppl_reg_every = ppl_reg_every
+        self.penalize_d_every = penalize_d_every
         self.ppl_weight = ppl_weight
 
         self._mean_path_length = 0
@@ -37,15 +39,13 @@ class GanTask(pl.LightningModule):
         z = z.type_as(self.synthesis_net.style_conv.bias) #TODO: not sure about this gonnokod
 
         w = self.mapping_net.forward(z, labels)
-        return torch.repeat_interleave(w[:, :, None], self.synthesis_net.num_layers, dim=1)
+        return torch.repeat_interleave(w[:, None, :], self.synthesis_net.num_layers, dim=1)
 
     def forward(self, batch_size: int, labels: Optional[torch.Tensor], mix_prob: float = 0.9) -> torch.Tensor:
         w_plus = self.generate_latents(batch_size, labels)
-
         if mix_prob > 0 and random.random() < mix_prob: 
             w_plus_ = self.generate_latents(batch_size, labels) # TODO: consider to put random labels and use mixup in discriminator
             w_plus = self.mix_latents(w_plus, w_plus_) # TODO: consider more radical mixing
-
         return self.synthesis_net.forward(w_plus), w_plus
 
     def ppl_regularization(self, fake_img: torch.Tensor, latents: torch.Tensor, decay: float=0.01) -> torch.Tensor:
@@ -63,16 +63,19 @@ class GanTask(pl.LightningModule):
         self._mean_path_length = path_mean.detach()
 
         return path_penalty, path_lengths
+    
+    @staticmethod
+    def generator_non_saturating_gan_loss(fake_scores: torch.Tensor) -> torch.Tensor:
+        maximize_fakes = F.softplus(-fake_scores).mean()
+        return maximize_fakes
 
     @staticmethod
-    def non_saturating_gan_loss(fake_scores: torch.Tensor, real_scores: torch.Tensor) -> torch.Tensor:
+    def critic_non_saturating_gan_loss(fake_scores: torch.Tensor, real_scores: torch.Tensor) -> torch.Tensor:
         maximize_reals = F.softplus(-real_scores).mean()
         minimaze_fakes = F.softplus(fake_scores).mean()
-        maximize_fakes = F.softplus(-fake_scores).mean()
 
         critic_loss = maximize_reals + minimaze_fakes  
-        generator_loss = maximize_fakes
-        return critic_loss, generator_loss
+        return critic_loss
 
     @staticmethod
     def r1_penalty(real_score: torch.Tensor, real_input: torch.Tensor) -> torch.Tensor:
@@ -95,30 +98,27 @@ class GanTask(pl.LightningModule):
 
     def mix_latents(self, w: torch.Tensor, w2: torch.Tensor) -> torch.Tensor:
         layer_num = w.shape[1]
-        index = torch.randint(1, layer_num, 1)
+        index = torch.randint(1, layer_num, (1,))
         return torch.cat([w[:, :index], w2[:, index:]], dim=1)
 
     def training_step(self, batch, batch_idx, optimizer_idx):
         real_images, labels = batch
+        real_images.requires_grad = True #TODO: WTF MAN? INVESTIGATE THIS SHIT
+
+        labels = F.one_hot(labels.long(), self.mapping_net.label_size) #TODO: remove
+        labels = labels.type_as(self.synthesis_net.style_conv.bias) #TODO: not sure about this gonnokod
+
         batch_size = real_images.shape[0]
 
         # generate fakes and scores
         fake_images, latents = self.forward(batch_size, labels)
-        real_scores = self.critic_net.forward(real_images)
-        fake_scores = self.critic_net.forward(fake_images)
-
+        real_scores = self.critic_net.forward(real_images, labels)
+        fake_scores_no_gen = self.critic_net.forward(fake_images.detach(), labels) # DETACH is used to prevent extra computations 
+        fake_scores = self.critic_net.forward(fake_images, labels)
+        
         # get losses
-        critic_loss, generator_loss = self.non_saturating_gan_loss(fake_scores, real_scores)
-
-        # add gradient penalty
-        r1_penalty = self.r1_penalty(real_scores, real_images)
-        critic_loss = critic_loss + self.gamma * r1_penalty
-
-        # add ppl penalty
-        if batch_idx % self.ppl_reg_every == 0: # TODO: Check it! Rosinality line 258. For some reasons guy zeroing grads and making extra step
-            path_loss, path_lengths = self.ppl_regularization(fake_images, latents)
-
-            generator_loss = generator_loss + self.ppl_weight * self.ppl_reg_every * path_loss
+        critic_loss = self.critic_non_saturating_gan_loss(fake_scores_no_gen, real_scores)
+        generator_loss = self.generator_non_saturating_gan_loss(fake_scores)
 
         # get optimizers 
         (generator_opt, critic_opt) = self.optimizers()
@@ -129,6 +129,14 @@ class GanTask(pl.LightningModule):
         self.synthesis_net.requires_grad_(True)
         self.mapping_net.requires_grad_(True)
 
+        # add ppl penalty
+        if batch_idx % self.ppl_reg_every == 0: # TODO: Check it! Rosinality line 258. For some reasons guy zeroing grads and making extra step
+            path_loss, path_lengths = self.ppl_regularization(fake_images, latents)
+
+            generator_loss = generator_loss + self.ppl_weight * self.ppl_reg_every * path_loss
+
+        self.log('generator_loss', generator_loss, prog_bar=True)
+
         self.manual_backward(generator_loss, generator_opt)
         generator_opt.step()
         generator_opt.zero_grad()
@@ -137,6 +145,16 @@ class GanTask(pl.LightningModule):
         self.synthesis_net.requires_grad_(False)
         self.mapping_net.requires_grad_(False)
 
+        # add gradient penalty
+        if batch_idx % self.penalize_d_every == 0:
+            r1_penalty = self.r1_penalty(real_scores, real_images)
+            critic_loss = critic_loss + self.gamma * self.penalize_d_every * r1_penalty
+
+        self.log('critic_loss', critic_loss, prog_bar=True)
+
         self.manual_backward(critic_loss, critic_opt)
         critic_opt.step()
         critic_opt.zero_grad()
+
+        self.synthesis_net.requires_grad_(True)
+        self.mapping_net.requires_grad_(True)
