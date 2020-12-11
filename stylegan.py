@@ -106,7 +106,7 @@ class GanTask(pl.LightningModule):
         real_images.requires_grad = True #TODO: WTF MAN? INVESTIGATE THIS SHIT
 
         labels = F.one_hot(labels.long(), self.mapping_net.label_size) #TODO: remove
-        labels = labels.type_as(self.synthesis_net.style_conv.bias) #TODO: not sure about this gonnokod
+        labels = labels.type_as(self.synthesis_net.style_conv.bias) #TODO: not sure about this govnokod
 
         batch_size = real_images.shape[0]
 
@@ -158,3 +158,5 @@ class GanTask(pl.LightningModule):
 
         self.synthesis_net.requires_grad_(True)
         self.mapping_net.requires_grad_(True)
+
+        return 1

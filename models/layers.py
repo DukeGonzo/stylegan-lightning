@@ -70,7 +70,8 @@ class ModConvBase(EqualizedLrLayer):
                        stride: int=1, 
                        dilation: int=1,
                        equalize_lr: bool = True,
-                       lr_mul: float = 1):
+                       lr_mul: float = 1,
+                       add_bias: bool = True):
         super().__init__(
             weight_shape=(1, out_channels, in_channels, filter_size, filter_size),
             equalize_lr = equalize_lr,
@@ -82,6 +83,11 @@ class ModConvBase(EqualizedLrLayer):
         self.filter_size = filter_size
         self.stride = stride
         self.dilation = dilation
+
+        self.bias = None
+        if add_bias:
+            self.bias = nn.Parameter(torch.zeros(1, out_channels, 1, 1))
+
 
     def _get_same_padding(self, input_size):
         return ((input_size - 1) * (self.stride - 1) + self.dilation * (self.filter_size - 1)) // 2
@@ -97,8 +103,9 @@ class ModConvBase(EqualizedLrLayer):
         kernel = kernel * expanded_style 
 
         if self.demodulate:
-            demodulation_coefficient = torch.rsqrt((kernel ** 2).sum(dim=(2, 3, 4), keepdim=True) + self.eps) #TODO: rewrite in einops?
-            kernel = kernel * demodulation_coefficient
+            # demodulation_coefficient = torch.rsqrt((kernel ** 2).sum(dim=(2, 3, 4), keepdim=True) + self.eps) #TODO: rewrite in einops?
+            demodulation_coefficient = torch.linalg.norm(kernel, dim=(2, 3, 4), keepdim=True) + self.eps
+            kernel = kernel / demodulation_coefficient
 
         return kernel
     
@@ -110,7 +117,8 @@ class ModConv2d(ModConvBase):
                        stride: int=1, 
                        dilation: int=1,
                        equalize_lr: bool = True,
-                       lr_mul: float = 1):
+                       lr_mul: float = 1,
+                       add_bias: bool = True):
         super().__init__(
             in_channels, 
             out_channels, 
@@ -119,7 +127,8 @@ class ModConv2d(ModConvBase):
             stride, 
             dilation,
             equalize_lr,
-            lr_mul)
+            lr_mul,
+            add_bias)
 
 
     def forward(self, x, style: torch.Tensor):
@@ -141,7 +150,11 @@ class ModConv2d(ModConvBase):
         kernel = kernel.view(batch_size * self.out_channels, *ws)
 
         padding = self._get_same_padding(h)
-        x = F.conv2d(x, kernel, padding=padding, groups=batch_size)
+        
+        bias = None
+        if self.bias is not None:
+            bias = torch.repeat_interleave(self.bias, batch_size)
+        x = F.conv2d(x, kernel, padding=padding, groups=batch_size, bias=bias)
 
         return x.view(batch_size, self.out_channels, h, w)
 
@@ -153,7 +166,8 @@ class ModTransposedConv2d(ModConvBase):
                        stride: int=1, 
                        dilation: int=1,
                        equalize_lr: bool = True,
-                       lr_mul: float = 1):
+                       lr_mul: float = 1,
+                       add_bias: bool = False):
         super().__init__(
             in_channels, 
             out_channels, 
@@ -162,7 +176,8 @@ class ModTransposedConv2d(ModConvBase):
             stride, 
             dilation,
             equalize_lr,
-            lr_mul)
+            lr_mul,
+            add_bias)
 
 
     def forward(self, x, style: torch.Tensor):
@@ -183,7 +198,11 @@ class ModTransposedConv2d(ModConvBase):
         _, _, *ws = expanded_kernel.shape
         kernel = expanded_kernel.reshape(batch_size * self.in_channels, *ws) #SUSPICIOUS 
 
-        x = F.conv_transpose2d(x, kernel, padding=0, stride=2, groups=batch_size) # TODO: remove hardcode, calculate padding properly
+        bias = None
+        if self.bias is not None:
+            bias = torch.repeat_interleave(self.bias, batch_size)
+
+        x = F.conv_transpose2d(x, kernel, padding=0, stride=2, groups=batch_size, bias=bias) # TODO: remove hardcode, calculate padding properly
         _,_, h,w = x.shape
         return x.view(batch_size, self.out_channels, h, w)
 
@@ -259,6 +278,7 @@ class StyleConvBase(pl.LightningModule):
                  out_channels: int,
                  equalize_lr: bool = True,
                  lr_mul: float = 1,
+                 add_bias: bool = True,
                  ) -> None:
         super().__init__()
 
@@ -267,13 +287,20 @@ class StyleConvBase(pl.LightningModule):
                                             bias_init=1.0, 
                                             equalize_lr=equalize_lr, 
                                             lr_mul=lr_mul)
-        self.bias = nn.Parameter(torch.zeros(1, out_channels, 1, 1))
+        # self.bias = 0.
+        if add_bias:
+            self.bias = nn.Parameter(torch.zeros(1, out_channels, 1, 1))
 
     def bias_and_activation(self, x: torch.Tensor) -> torch.Tensor:
         bias = self.bias
         scale = 2 ** 0.5 # TODO: check it
 
-        return F.leaky_relu(x + bias, negative_slope=0.2) * scale
+        return F.leaky_relu(x + bias, negative_slope=0.2, inplace=True) * scale
+
+    def activation(self, x: torch.Tensor) -> torch.Tensor:
+        scale = 2 ** 0.5 # TODO: check it
+
+        return F.leaky_relu(x, negative_slope=0.2, inplace=True) * scale
 
 
 class StyleConv(StyleConvBase):
@@ -289,9 +316,10 @@ class StyleConv(StyleConvBase):
                         in_channels, 
                         out_channels, 
                         equalize_lr, 
-                        lr_mul)
+                        lr_mul, 
+                        add_bias=False)
 
-        self.conv = ModConv2d(in_channels, out_channels, filter_size, stride=1)
+        self.conv = ModConv2d(in_channels, out_channels, filter_size, stride=1, add_bias=True)
         self.inject_noise = NoiseInjection()
 
 
@@ -300,7 +328,7 @@ class StyleConv(StyleConvBase):
         style = self.latent2style.forward(latent)
         x = self.conv.forward(x, style)
         x = self.inject_noise.forward(x, noise)
-        return self.bias_and_activation(x)
+        return self.activation(x) #self.bias_and_activation(x)  
 
 class StyleConvUp(StyleConvBase):
     def __init__(self, 
@@ -315,9 +343,10 @@ class StyleConvUp(StyleConvBase):
                         in_channels, 
                         out_channels, 
                         equalize_lr, 
-                        lr_mul)
+                        lr_mul,
+                        add_bias=True)
 
-        self.conv = ModTransposedConv2d(in_channels, out_channels, filter_size, stride=2)
+        self.conv = ModTransposedConv2d(in_channels, out_channels, filter_size, stride=2, add_bias= False)
         self.filter_bilinear = BilinearFilter(out_channels, scaling_factor= 2, padding=1)
         self.inject_noise = NoiseInjection()
 
@@ -327,7 +356,7 @@ class StyleConvUp(StyleConvBase):
         x = self.conv.forward(x, style)
         x = self.filter_bilinear.forward(x)
         x = self.inject_noise.forward(x, noise)
-        return self.bias_and_activation(x)
+        return self.bias_and_activation(x) # FUCKING UPFIIIIIRDN!
 
 
 class ToRgb(StyleConvBase):
@@ -341,15 +370,15 @@ class ToRgb(StyleConvBase):
                         in_channels, 
                         3, 
                         equalize_lr, 
-                        lr_mul)
+                        lr_mul,
+                        add_bias=False)
 
-        self.conv = ModConv2d(in_channels, out_channels = 3, demodulate = False, filter_size = 1, stride=1)
+        self.conv = ModConv2d(in_channels, out_channels = 3, demodulate = False, filter_size = 1, stride=1, add_bias=True)
 
 
     def forward(self, x: torch.Tensor, latent: torch.Tensor) -> torch.Tensor:        
         style = self.latent2style.forward(latent)
         x = self.conv.forward(x, style)
-        x += self.bias
         return x
 
 class EqualizedLinear(EqualizedLrLayer):

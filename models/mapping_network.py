@@ -38,7 +38,7 @@ class MappingNetwork(pl.LightningModule):
             else:
                 linear_layer = layers.EqualizedLinear(in_channels, state_size, lr_mul=lr_mul)
             linear_layers.append(linear_layer)
-            linear_layers.append(layers.ScaledLeakyReLU(negative_slope=0.2))
+            linear_layers.append(layers.ScaledLeakyReLU(negative_slope=0.2, inplace=True))
     
             in_channels = state_size
 
