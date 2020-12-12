@@ -39,6 +39,8 @@ class GanTask(pl.LightningModule):
         z = z.type_as(self.synthesis_net.style_conv.bias) #TODO: not sure about this gonnokod
 
         w = self.mapping_net.forward(z, labels)
+
+        # return w[:, None, :].expand(-1, self.synthesis_net.num_layers, -1)
         return torch.repeat_interleave(w[:, None, :], self.synthesis_net.num_layers, dim=1)
 
     def forward(self, batch_size: int, labels: Optional[torch.Tensor], mix_prob: float = 0.9) -> torch.Tensor:
@@ -103,31 +105,24 @@ class GanTask(pl.LightningModule):
 
     def training_step(self, batch, batch_idx, optimizer_idx):
         real_images, labels = batch
-        real_images.requires_grad = True #TODO: WTF MAN? INVESTIGATE THIS SHIT
 
         labels = F.one_hot(labels.long(), self.mapping_net.label_size) #TODO: remove
         labels = labels.type_as(self.synthesis_net.style_conv.bias) #TODO: not sure about this gonnokod
 
         batch_size = real_images.shape[0]
 
-        # generate fakes and scores
-        fake_images, latents = self.forward(batch_size, labels)
-        real_scores = self.critic_net.forward(real_images, labels)
-        fake_scores_no_gen = self.critic_net.forward(fake_images.detach(), labels) # DETACH is used to prevent extra computations 
-        fake_scores = self.critic_net.forward(fake_images, labels)
-        
-        # get losses
-        critic_loss = self.critic_non_saturating_gan_loss(fake_scores_no_gen, real_scores)
-        generator_loss = self.generator_non_saturating_gan_loss(fake_scores)
-
         # get optimizers 
         (generator_opt, critic_opt) = self.optimizers()
 
-        
-        # make optimization steps
+        # DEAL WITH GENERATOR
         self.critic_net.requires_grad_(False)
         self.synthesis_net.requires_grad_(True)
         self.mapping_net.requires_grad_(True)
+
+        # make optimization steps
+        fake_images, latents = self.forward(batch_size, labels)
+        fake_scores = self.critic_net.forward(fake_images, labels)
+        generator_loss = self.generator_non_saturating_gan_loss(fake_scores)
 
         # add ppl penalty
         if batch_idx % self.ppl_reg_every == 0: # TODO: Check it! Rosinality line 258. For some reasons guy zeroing grads and making extra step
@@ -141,9 +136,16 @@ class GanTask(pl.LightningModule):
         generator_opt.step()
         generator_opt.zero_grad()
 
+
+        # DEAL WITH CRITIQUE
         self.critic_net.requires_grad_(True)
         self.synthesis_net.requires_grad_(False)
         self.mapping_net.requires_grad_(False)
+        real_images.requires_grad_(True)
+
+        real_scores = self.critic_net.forward(real_images, labels)
+        fake_scores_no_gen = self.critic_net.forward(fake_images.detach(), labels) # DETACH is used to prevent extra computations 
+        critic_loss = self.critic_non_saturating_gan_loss(fake_scores_no_gen, real_scores)
 
         # add gradient penalty
         if batch_idx % self.penalize_d_every == 0:
@@ -155,6 +157,3 @@ class GanTask(pl.LightningModule):
         self.manual_backward(critic_loss, critic_opt)
         critic_opt.step()
         critic_opt.zero_grad()
-
-        self.synthesis_net.requires_grad_(True)
-        self.mapping_net.requires_grad_(True)

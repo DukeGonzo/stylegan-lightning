@@ -122,7 +122,7 @@ class ModConv2d(ModConvBase):
             lr_mul)
 
 
-    def forward(self, x, style: torch.Tensor):
+    def forward(self, x, style: torch.Tensor, fused_bias: Optional[torch.Tensor] = None):
         batch_size, c , h, w = x.shape
 
         assert c == self.in_channels
@@ -140,8 +140,12 @@ class ModConv2d(ModConvBase):
         _, _, *ws = kernel.shape
         kernel = kernel.view(batch_size * self.out_channels, *ws)
 
+        if fused_bias is not None:
+            # fused_bias = torch.repeat_interleave(fused_bias, batch_size)
+            fused_bias = fused_bias[..., None].expand(-1, batch_size).flatten(-2, -1)
+
         padding = self._get_same_padding(h)
-        x = F.conv2d(x, kernel, padding=padding, groups=batch_size)
+        x = F.conv2d(x, kernel, padding=padding, groups=batch_size, bias=fused_bias)
 
         return x.view(batch_size, self.out_channels, h, w)
 
@@ -165,7 +169,7 @@ class ModTransposedConv2d(ModConvBase):
             lr_mul)
 
 
-    def forward(self, x, style: torch.Tensor):
+    def forward(self, x, style: torch.Tensor, fused_bias: Optional[torch.Tensor] = None):
         batch_size, c , h, w = x.shape
 
         assert c == self.in_channels
@@ -183,7 +187,11 @@ class ModTransposedConv2d(ModConvBase):
         _, _, *ws = expanded_kernel.shape
         kernel = expanded_kernel.reshape(batch_size * self.in_channels, *ws) #SUSPICIOUS 
 
-        x = F.conv_transpose2d(x, kernel, padding=0, stride=2, groups=batch_size) # TODO: remove hardcode, calculate padding properly
+        if fused_bias is not None:
+            # fused_bias = torch.repeat_interleave(fused_bias, batch_size)
+            fused_bias = fused_bias[..., None].expand(-1, batch_size).flatten(-2, -1)
+
+        x = F.conv_transpose2d(x, kernel, padding=0, stride=2, groups=batch_size, bias=fused_bias) # TODO: remove hardcode, calculate padding properly
         _,_, h,w = x.shape
         return x.view(batch_size, self.out_channels, h, w)
 
@@ -243,12 +251,12 @@ class BilinearFilter(pl.LightningModule):
 
         return pad0, pad1
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, fused_bias: Optional[torch.Tensor] = None) -> torch.Tensor:
         kernel = self.kernel
         pad0, pad1 = self.pad0, self.pad1
        
         x = F.pad(x, [pad0, pad1, pad0, pad1])
-        x = F.conv2d(x, kernel, groups=self.channels)
+        x = F.conv2d(x, kernel, groups=self.channels, bias=fused_bias)
 
         return x
 
@@ -267,13 +275,13 @@ class StyleConvBase(pl.LightningModule):
                                             bias_init=1.0, 
                                             equalize_lr=equalize_lr, 
                                             lr_mul=lr_mul)
-        self.bias = nn.Parameter(torch.zeros(1, out_channels, 1, 1))
+        self.bias = nn.Parameter(torch.zeros(out_channels))
 
-    def bias_and_activation(self, x: torch.Tensor) -> torch.Tensor:
-        bias = self.bias
-        scale = 2 ** 0.5 # TODO: check it
+    # def bias_and_activation(self, x: torch.Tensor) -> torch.Tensor:
+    #     bias = self.bias
+    #     scale = 2 ** 0.5 # TODO: check it
 
-        return F.leaky_relu(x + bias, negative_slope=0.2, inplace=True) * scale
+    #     return F.leaky_relu(x + bias, negative_slope=0.2, inplace=True) * scale
 
     def activation(self, x: torch.Tensor) -> torch.Tensor:
         scale = 2 ** 0.5 # TODO: check it
@@ -304,9 +312,9 @@ class StyleConv(StyleConvBase):
     def forward(self, x: torch.Tensor, latent: torch.Tensor, noise: torch.Tensor) -> torch.Tensor:
         
         style = self.latent2style.forward(latent)
-        x = self.conv.forward(x, style)
+        x = self.conv.forward(x, style, fused_bias=self.bias)
         x = self.inject_noise.forward(x, noise)
-        return self.bias_and_activation(x)
+        return self.activation(x)
 
 class StyleConvUp(StyleConvBase):
     def __init__(self, 
@@ -331,9 +339,9 @@ class StyleConvUp(StyleConvBase):
     def forward(self, x: torch.Tensor, latent: torch.Tensor, noise: torch.Tensor) -> torch.Tensor:       
         style = self.latent2style.forward(latent)
         x = self.conv.forward(x, style)
-        x = self.filter_bilinear.forward(x)
+        x = self.filter_bilinear.forward(x, fused_bias=self.bias)
         x = self.inject_noise.forward(x, noise)
-        return self.bias_and_activation(x)
+        return self.activation(x)
 
 
 class ToRgb(StyleConvBase):
@@ -354,8 +362,8 @@ class ToRgb(StyleConvBase):
 
     def forward(self, x: torch.Tensor, latent: torch.Tensor) -> torch.Tensor:        
         style = self.latent2style.forward(latent)
-        x = self.conv.forward(x, style)
-        x += self.bias
+        x = self.conv.forward(x, style, fused_bias=self.bias)
+        # x += self.bias
         return x
 
 class EqualizedLinear(EqualizedLrLayer):
