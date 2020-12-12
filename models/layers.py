@@ -97,8 +97,8 @@ class ModConvBase(EqualizedLrLayer):
         kernel = kernel * expanded_style 
 
         if self.demodulate:
-            demodulation_coefficient = torch.rsqrt((kernel ** 2).sum(dim=(2, 3, 4), keepdim=True) + self.eps) #TODO: rewrite in einops?
-            kernel = kernel * demodulation_coefficient
+            demodulation_coefficient = torch.linalg.norm(kernel, dim=(2, 3, 4), keepdim=True) + self.eps
+            kernel = kernel / demodulation_coefficient
 
         return kernel
     
