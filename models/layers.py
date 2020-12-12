@@ -273,7 +273,13 @@ class StyleConvBase(pl.LightningModule):
         bias = self.bias
         scale = 2 ** 0.5 # TODO: check it
 
-        return F.leaky_relu(x + bias, negative_slope=0.2) * scale
+        return F.leaky_relu(x + bias, negative_slope=0.2, inplace=True) * scale
+
+    def activation(self, x: torch.Tensor) -> torch.Tensor:
+        scale = 2 ** 0.5 # TODO: check it
+
+        return F.leaky_relu(x, negative_slope=0.2, inplace=True) * scale
+
 
 
 class StyleConv(StyleConvBase):
