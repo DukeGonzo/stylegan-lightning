@@ -53,8 +53,19 @@ class GanTask(pl.LightningModule):
     def ppl_regularization(self, fake_img: torch.Tensor, latents: torch.Tensor, decay: float=0.01) -> torch.Tensor:
         mean_path_length = self._mean_path_length
 
+        batch_size = fake_img.shape[0]
+        path_batch_shrink = 2
+
+        # fake_img = fake_img[0:batch_size//path_batch_shrink]
+        # latents = latents[0:batch_size//path_batch_shrink] # TODO: SHOULD I SCALE GRAD?
+
+        # fake_img.retain_grad()
+        # latents.retain_grad()
+
+
+
         noise = torch.randn_like(fake_img) / math.sqrt(fake_img.shape[2] * fake_img.shape[3])
-        grad, = autograd.grad(outputs=(fake_img * noise).sum(), inputs=latents, create_graph=True)
+        grad, = autograd.grad(outputs=(fake_img * noise).sum(), inputs=latents, retain_graph=True)
         path_lengths = torch.sqrt(grad.pow(2).sum(2).mean(1))
 
         path_mean = mean_path_length + decay * (path_lengths.mean() - mean_path_length)
@@ -81,7 +92,7 @@ class GanTask(pl.LightningModule):
 
     @staticmethod
     def r1_penalty(real_score: torch.Tensor, real_input: torch.Tensor) -> torch.Tensor:
-        grad_real, = autograd.grad(outputs=real_score.sum(), inputs=real_input, create_graph=True)
+        grad_real, = autograd.grad(outputs=real_score.sum(), inputs=real_input, retain_graph=True)
         grad_penalty =  torch.sum(grad_real.pow(2), dim=(1,2,3))
 
         return grad_penalty.mean()
@@ -127,10 +138,13 @@ class GanTask(pl.LightningModule):
         # add ppl penalty
         if batch_idx % self.ppl_reg_every == 0: # TODO: Check it! Rosinality line 258. For some reasons guy zeroing grads and making extra step
             path_loss, path_lengths = self.ppl_regularization(fake_images, latents)
+            self.log('path_lengths', path_lengths.mean(), prog_bar=True)
+
 
             generator_loss = generator_loss + self.ppl_weight * self.ppl_reg_every * path_loss
 
         self.log('generator_loss', generator_loss, prog_bar=True)
+
 
         self.manual_backward(generator_loss, generator_opt)
         generator_opt.step()
