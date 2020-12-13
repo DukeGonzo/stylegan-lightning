@@ -83,7 +83,7 @@ class DataModule(pl.LightningDataModule):
         self.sampler = sampler
 
     def train_dataloader(self):
-        return DataLoader(self.dataset, batch_size=self.batch_size, sampler=self.sampler, num_workers=self.number_of_workers)
+        return DataLoader(self.dataset, batch_size=self.batch_size, sampler=self.sampler, num_workers=self.number_of_workers, pin_memory = True)
 
     def val_dataloader(self):
         raise NotImplementedError()
