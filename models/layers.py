@@ -142,7 +142,7 @@ class ModConv2d(ModConvBase):
 
         if fused_bias is not None:
             # fused_bias = torch.repeat_interleave(fused_bias, batch_size)
-            fused_bias = fused_bias[..., None].expand(-1, batch_size).flatten(-2, -1)
+            fused_bias = fused_bias.expand(batch_size, -1).flatten()
 
         padding = self._get_same_padding(h)
         x = F.conv2d(x, kernel, padding=padding, groups=batch_size, bias=fused_bias)
@@ -189,7 +189,7 @@ class ModTransposedConv2d(ModConvBase):
 
         if fused_bias is not None:
             # fused_bias = torch.repeat_interleave(fused_bias, batch_size)
-            fused_bias = fused_bias[..., None].expand(-1, batch_size).flatten(-2, -1)
+            fused_bias = fused_bias.expand(batch_size, -1).flatten()
 
         x = F.conv_transpose2d(x, kernel, padding=0, stride=2, groups=batch_size, bias=fused_bias) # TODO: remove hardcode, calculate padding properly
         _,_, h,w = x.shape
@@ -281,12 +281,12 @@ class StyleConvBase(pl.LightningModule):
     #     bias = self.bias
     #     scale = 2 ** 0.5 # TODO: check it
 
-    #     return F.leaky_relu(x + bias, negative_slope=0.2, inplace=True) * scale
+    #     return F.leaky_relu(x + bias, negative_slope=0.2, inplace=False) * scale
 
     def activation(self, x: torch.Tensor) -> torch.Tensor:
         scale = 2 ** 0.5 # TODO: check it
 
-        return F.leaky_relu(x, negative_slope=0.2, inplace=True) * scale
+        return F.leaky_relu(x, negative_slope=0.2, inplace=False) * scale
 
 
 
@@ -314,6 +314,7 @@ class StyleConv(StyleConvBase):
         style = self.latent2style.forward(latent)
         x = self.conv.forward(x, style, fused_bias=self.bias)
         x = self.inject_noise.forward(x, noise)
+        # x += self.bias[np.newaxis, :, np.newaxis, np.newaxis]
         return self.activation(x)
 
 class StyleConvUp(StyleConvBase):
@@ -363,7 +364,7 @@ class ToRgb(StyleConvBase):
     def forward(self, x: torch.Tensor, latent: torch.Tensor) -> torch.Tensor:        
         style = self.latent2style.forward(latent)
         x = self.conv.forward(x, style, fused_bias=self.bias)
-        # x += self.bias
+        # x += self.bias[np.newaxis, :, np.newaxis, np.newaxis]
         return x
 
 class EqualizedLinear(EqualizedLrLayer):

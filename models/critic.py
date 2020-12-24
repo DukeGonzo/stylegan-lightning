@@ -72,7 +72,7 @@ class CriticNetwork(pl.LightningModule):
 
     def forward(self, x: torch.Tensor, label: Optional[torch.Tensor], return_activations: bool = False) -> torch.Tensor:
         x = self.conv.forward(x)
-        x = F.leaky_relu(x, negative_slope=self._leaky_relu_slope, inplace=True) * (2 ** 0.5)
+        x = F.leaky_relu(x, negative_slope=self._leaky_relu_slope, inplace=False) * (2 ** 0.5)
         
         activations = [x]
         for block in self.blocks:
@@ -81,11 +81,11 @@ class CriticNetwork(pl.LightningModule):
 
         x =  self.add_std_channel.forward(x)
         x = self.conv_final.forward(x)
-        x = F.leaky_relu(x, self._leaky_relu_slope, inplace=True)  * (2 ** 0.5)
+        x = F.leaky_relu(x, self._leaky_relu_slope, inplace=False)  * (2 ** 0.5)
 
         x = torch.flatten(x, start_dim=1)
         x = self.head[0].forward(x)
-        x = F.leaky_relu(x, self._leaky_relu_slope, inplace=True)  * (2 ** 0.5)
+        x = F.leaky_relu(x, self._leaky_relu_slope, inplace=False)  * (2 ** 0.5)
         x = self.head[1].forward(x)
 
         if label != None:
@@ -117,10 +117,10 @@ class CriticBlock(pl.LightningModule):
         shortcut = self.shortcut_down.forward(shortcut)
 
         x = self.conv.forward(x)
-        x = F.leaky_relu(x, self._leaky_relu_slope, inplace=True)  * (2 ** 0.5)
+        x = F.leaky_relu(x, self._leaky_relu_slope, inplace=False)  * (2 ** 0.5)
 
         x = self.bilinear.forward(x)
         x = self.conv_down.forward(x)
-        x = F.leaky_relu(x, self._leaky_relu_slope, inplace=True)  * (2 ** 0.5)
+        x = F.leaky_relu(x, self._leaky_relu_slope, inplace=False)  * (2 ** 0.5)
 
         return (x + shortcut) / math.sqrt(2)
