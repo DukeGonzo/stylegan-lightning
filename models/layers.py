@@ -45,7 +45,7 @@ class EqualizedLrLayer(pl.LightningModule):
         self.eps = 1e-8
 
         # Equalized learning rate from https://arxiv.org/abs/1710.10196
-        self.weight = nn.Parameter(torch.randn(weight_shape))
+        self.weight = nn.Parameter(torch.randn(weight_shape).div_(lr_mul))
 
         if not equalize_lr:
             # TODO REMOVE batch_dim! 

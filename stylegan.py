@@ -13,6 +13,7 @@ import pytorch_lightning as pl
 from models.generator import SynthesisNetwork
 from models.critic import CriticNetwork
 from models.mapping_network import MappingNetwork
+import numpy as np
 
 class GanTask(pl.LightningModule):
     def __init__(self,
@@ -50,6 +51,7 @@ class GanTask(pl.LightningModule):
         if mix_prob > 0 and random.random() < mix_prob: 
             w_plus_ = self.generate_latents(batch_size, labels) # TODO: consider to put random labels and use mixup in discriminator
             w_plus = self.mix_latents(w_plus, w_plus_) # TODO: consider more radical mixing
+
         return self.synthesis_net.forward(w_plus), w_plus
     
     @staticmethod
@@ -90,8 +92,8 @@ class GanTask(pl.LightningModule):
 
     def configure_optimizers(self):
          
-        generator_opt = optim.Adam(chain(self.synthesis_net.parameters(), self.mapping_net.parameters()), lr=0.002, betas=(0.0, 0.99))
-        critic_opt = optim.Adam(self.critic_net.parameters(), lr=0.002)
+        generator_opt = optim.Adam(chain(self.synthesis_net.parameters(), self.mapping_net.parameters()), lr=0.0025, betas=(0.0, 0.99))
+        critic_opt = optim.Adam(self.critic_net.parameters(), lr=0.0025, betas=(0.0, 0.99))
 
         # gen_scheduler = {'scheduler': optim.lr_scheduler.ExponentialLR(generator_opt, 0.99),
         #          'interval': 'step'} 
@@ -113,34 +115,11 @@ class GanTask(pl.LightningModule):
 
         batch_size = real_images.shape[0]
 
+        fake_images, latents = self.forward(batch_size, labels)
+
+
         # get optimizers 
         (generator_opt, critic_opt) = self.optimizers()
-
-        # DEAL WITH GENERATOR
-        self.critic_net.requires_grad_(False)
-        self.synthesis_net.requires_grad_(True)
-        self.mapping_net.requires_grad_(True)
-
-        # make optimization steps
-        fake_images, latents = self.forward(batch_size, labels)
-        # fake_scores = self.critic_net.forward(fake_images, labels)
-        # generator_loss = self.generator_non_saturating_gan_loss(fake_scores)
-
-        # # add ppl penalty
-        # if batch_idx % self.ppl_reg_every == 0: # TODO: Check it! Rosinality line 258. For some reasons guy zeroing grads and making extra step
-        #     path_loss, path_lengths = self.ppl_regularization(fake_images, latents)
-        #     self.log('path_lengths', path_lengths.mean(), prog_bar=True)
-
-        #     generator_loss = generator_loss + self.ppl_weight * self.ppl_reg_every * path_loss
-
-        # self.log('generator_loss', generator_loss, prog_bar=True)
-
-
-
-        # self.manual_backward(generator_loss, generator_opt)
-        # generator_opt.step()
-        # generator_opt.zero_grad()
-
 
         # DEAL WITH CRITIQUE
         self.critic_net.requires_grad_(True)
@@ -154,22 +133,65 @@ class GanTask(pl.LightningModule):
 
         self.log('real_scores', real_scores.mean(), prog_bar=True)
         self.log('fake_scores', fake_scores_no_gen.mean(), prog_bar=True)
-        print(real_scores.mean())
-        print(fake_scores_no_gen.mean())
 
-
-        # add gradient penalty
-        # if batch_idx % self.penalize_d_every == 0:
-        #     r1_penalty = self.r1_penalty(real_scores, real_images)
-        #     self.log('r1_penalty', r1_penalty, prog_bar=True)
-        #     critic_loss = critic_loss + self.gamma / 2. * self.penalize_d_every * r1_penalty
+        #add gradient penalty
+        if batch_idx % self.penalize_d_every == 0:
+            r1_penalty = self.r1_penalty(real_scores, real_images)
+            self.log('r1_penalty', r1_penalty, prog_bar=True)
+            critic_loss = critic_loss + self.gamma / 2. * r1_penalty
 
         self.log('critic_loss', critic_loss, prog_bar=True)
 
         self.manual_backward(critic_loss, critic_opt)
         critic_opt.step()
-        critic_opt.zero_grad()
-        if batch_idx == 4:
-            raise ValueError('bled') 
 
-        return [666, 777]
+        # critic_grad = np.mean([torch.linalg.norm(i.grad).item() for i in self.critic_net.parameters()])
+        # self.log('critic_grad', critic_grad, prog_bar=True)
+
+        # synthesis_grad_crit = np.mean([torch.linalg.norm(i.grad).item() for i in self.synthesis_net.parameters()])
+        # self.log('synthesis_grad_crit', synthesis_grad_crit, prog_bar=True)
+
+        # mapping_net_grad_crit = np.mean([torch.linalg.norm(i.grad).item() for i in self.mapping_net.parameters()])
+        # self.log('mapping_net_grad_crit', mapping_net_grad_crit, prog_bar=True)
+
+        critic_opt.zero_grad()
+
+        # DEAL WITH GENERATOR
+        self.critic_net.requires_grad_(False)
+        self.synthesis_net.requires_grad_(True)
+        self.mapping_net.requires_grad_(True)
+
+        # make optimization steps
+        fake_scores = self.critic_net.forward(fake_images, labels)
+        generator_loss = self.generator_non_saturating_gan_loss(fake_scores)
+
+        self.log('generator_loss', generator_loss, prog_bar=True)
+
+        self.manual_backward(generator_loss, generator_opt)
+        generator_opt.step()
+        # critic_grad_gen = np.mean([torch.linalg.norm(i.grad).item() for i in self.critic_net.parameters()])
+        # self.log('critic_grad_gen', critic_grad_gen, prog_bar=True)
+
+        # synthesis_grad_gen = np.mean([torch.linalg.norm(i.grad).item() for i in self.synthesis_net.parameters()])
+        # self.log('synthesis_grad_gen', synthesis_grad_gen, prog_bar=True)
+
+        # mapping_net_grad_gen = np.mean([torch.linalg.norm(i.grad).item() for i in self.mapping_net.parameters()])
+        # self.log('mapping_net_grad_gen', mapping_net_grad_gen, prog_bar=True)
+
+        generator_opt.zero_grad()
+
+        # add ppl penalty
+
+        if batch_idx % self.ppl_reg_every == 0: # TODO: Check it! Rosinality line 258. For some reasons guy zeroing grads and making extra step
+            fake_images, latents = self.forward(2, labels[:2])
+            path_loss, path_lengths = self.ppl_regularization(fake_images, latents)
+            self.log('path_lengths', path_lengths.mean(), prog_bar=True)
+
+            path_loss = self.ppl_weight * path_loss
+        
+            self.manual_backward(path_loss, generator_opt)
+            generator_opt.step()
+            generator_opt.zero_grad()
+
+
+        return [critic_loss, generator_loss]
