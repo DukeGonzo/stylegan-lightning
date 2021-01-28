@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+# from torch.utils.checkpoint import checkpoint_sequential
 import pytorch_lightning as pl
 from . import layers
 
@@ -38,6 +39,8 @@ class CriticNetwork(pl.LightningModule):
 
         in_channels = self.channels[self.resolution]
 
+        self.activation =  layers.ScaledLeakyReLU(self._leaky_relu_slope, inplace=True)
+
         self.conv = layers.EqualizedConv(in_channels=3, 
                                       out_channels=in_channels,
                                       kernel_size=1,
@@ -54,6 +57,7 @@ class CriticNetwork(pl.LightningModule):
             in_channels = out_channels
         
         self.blocks = nn.Sequential(*block_sequence)
+        # checkpoint_sequential(self.blocks, cp_chunks, inp)
 
         self.add_std_channel = layers.AddStdChannel()
 
@@ -64,37 +68,41 @@ class CriticNetwork(pl.LightningModule):
                                       bias = True)
 
 
-        self.head = nn.ModuleList(
-            [layers.EqualizedLinear(self.channels[4] * 4 * 4, self.channels[4]),
-            # nn.LeakyReLU(negative_slope=self._leaky_relu_slope),
-            layers.EqualizedLinear(self.channels[4], max(1, self.label_size))]
+        self.head = nn.Sequential(
+            layers.EqualizedLinear(self.channels[4] * 4 * 4, self.channels[4]),
+            self.activation,
+            layers.EqualizedLinear(self.channels[4], max(1, self.label_size))
             )
 
     def forward(self, x: torch.Tensor, label: Optional[torch.Tensor], return_activations: bool = False) -> torch.Tensor:
         x = self.conv.forward(x)
-        x = F.leaky_relu(x, negative_slope=self._leaky_relu_slope, inplace=False) * (2 ** 0.5)
+        x =self.activation(x)
         
-        activations = [x]
-        for block in self.blocks:
-            x = block(x)
-            activations.append(x)
+        x = self.blocks(x)
+        # activations = [x]
+        # for block in self.blocks:
+            # x = block(x)
+            # activations.append(x)
+        # x = checkpoint_sequential(self.blocks, 2, x)
 
-        x =  self.add_std_channel.forward(x)
+        x = self.add_std_channel.forward(x)
         x = self.conv_final.forward(x)
-        x = F.leaky_relu(x, self._leaky_relu_slope, inplace=False)  * (2 ** 0.5)
+        x = self.activation(x)
 
         x = torch.flatten(x, start_dim=1)
-        x = self.head[0].forward(x)
-        x = F.leaky_relu(x, self._leaky_relu_slope, inplace=False)  * (2 ** 0.5)
-        x = self.head[1].forward(x)
+        x = self.head(x)
 
         if label != None:
             x = torch.mean(x * label, dim = -1, keepdim=True)
 
         if return_activations:
-            return x, activations
+            return x, None
             
         return x
+
+# @torch.jit.script
+# def fused_shortcut(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+#     return (x + y) / math.sqrt(2)
 
 class CriticBlock(pl.LightningModule):
     def __init__(self, 
@@ -105,6 +113,7 @@ class CriticBlock(pl.LightningModule):
         self._leaky_relu_slope = 0.2
 
         self.conv = layers.EqualizedConv(in_channels, in_channels, kernel_size= 3, bias=True, padding=1)
+        self.activation =  layers.ScaledLeakyReLU(self._leaky_relu_slope, inplace=True)
 
         self.bilinear = layers.BilinearFilter(in_channels, padding=2)
         self.conv_down = layers.EqualizedConv(in_channels, out_channels, 3, stride=2, bias=True, padding=0)
@@ -113,14 +122,18 @@ class CriticBlock(pl.LightningModule):
         self.shortcut_down = layers.EqualizedConv(in_channels, out_channels, 1, stride=2, bias=False, padding=0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        shortcut = self.shortcut_filter.forward(x)
+        # shortcut = self.shortcut_filter.forward(x)
+        shortcut = x
         shortcut = self.shortcut_down.forward(shortcut)
 
         x = self.conv.forward(x)
-        x = F.leaky_relu(x, self._leaky_relu_slope, inplace=False)  * (2 ** 0.5)
+        x = self.activation(x)
 
         x = self.bilinear.forward(x)
         x = self.conv_down.forward(x)
-        x = F.leaky_relu(x, self._leaky_relu_slope, inplace=False)  * (2 ** 0.5)
+        x = self.activation(x)
 
+        # return fused_shortcut(x, shortcut)
         return (x + shortcut) / math.sqrt(2)
+
+    

@@ -142,7 +142,7 @@ class AuxiliaryL2Projector(pl.LightningModule):
 
         self.head = nn.Sequential(
             layers.EqualizedLinear(output_size * 4, output_size, lr_mul= lr_mul),
-            layers.ScaledLeakyReLU(negative_slope=0.2, inplace=False),
+            layers.ScaledLeakyReLU(negative_slope=0.2, inplace=True),
             layers.EqualizedLinear(output_size, output_size, lr_mul= lr_mul)
             )
 

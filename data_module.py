@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader, WeightedRandomSampler
 import torchvision
 from torchvision import transforms
 from torchvision.datasets import ImageFolder
+from torchvision.transforms.transforms import RandomHorizontalFlip
 
 
 
@@ -34,8 +35,9 @@ class DataModule(pl.LightningDataModule):
             [
                 transforms.Resize(resolution), # TODO skip if dump_on_disk 
                 transforms.CenterCrop(resolution),
+                transforms.RandomHorizontalFlip(),
                 transforms.ToTensor(),
-                transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+                transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5], inplace=True),
             ]
         )
 

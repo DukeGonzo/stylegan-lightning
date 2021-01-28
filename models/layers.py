@@ -12,7 +12,7 @@ class ConstantLayer(pl.LightningModule):
     def __init__(self, channel, size=4):
         super().__init__()
 
-        self.input = nn.Parameter(torch.randn(1, channel, size, size))
+        self.input = nn.Parameter(torch.randn(1, channel, size, size, device=self.device))
 
     def forward(self, batch_size: int) -> torch.Tensor:
         assert batch_size > 0
@@ -45,7 +45,7 @@ class EqualizedLrLayer(pl.LightningModule):
         self.eps = 1e-8
 
         # Equalized learning rate from https://arxiv.org/abs/1710.10196
-        self.weight = nn.Parameter(torch.randn(weight_shape).div_(lr_mul))
+        self.weight = nn.Parameter(torch.randn(weight_shape, device=self.device).div_(lr_mul))
 
         if not equalize_lr:
             # TODO REMOVE batch_dim! 
@@ -129,8 +129,8 @@ class ModConv2d(ModConvBase):
         
         kernel = self.get_weight()
 
-        x = x.type_as(kernel)
-        style = style.type_as(kernel)
+        # x = x.type_as(kernel)
+        # style = style.type_as(kernel)
 
         kernel = self.modulate(kernel, style)
 
@@ -176,8 +176,8 @@ class ModTransposedConv2d(ModConvBase):
         
         kernel = self.get_weight()
 
-        x = x.type_as(kernel)
-        style = style.type_as(kernel)
+        # x = x.type_as(kernel)
+        # style = style.type_as(kernel)
 
         expanded_kernel = self.modulate(kernel, style)
 
@@ -224,7 +224,7 @@ class BilinearFilter(pl.LightningModule):
 
         kernel *= (self.scaling_factor ** 2)
 
-        self.register_buffer('kernel', kernel[None, None, :, :].repeat((self.channels, 1, 1, 1))) # TODO: maybe it's a not good idea
+        self.register_buffer('kernel', kernel[None, None, :, :].expand((self.channels, -1, -1, -1))) # TODO: maybe it's a not good idea
 
         if padding == 'SAME':
             self.pad0, self.pad1 = self._calculate_padding()
@@ -253,10 +253,11 @@ class BilinearFilter(pl.LightningModule):
 
     def forward(self, x: torch.Tensor, fused_bias: Optional[torch.Tensor] = None) -> torch.Tensor:
         kernel = self.kernel
+
         pad0, pad1 = self.pad0, self.pad1
        
-        x = F.pad(x, [pad0, pad1, pad0, pad1])
-        x = F.conv2d(x, kernel, groups=self.channels, bias=fused_bias)
+        # x = F.pad(x, [pad0, pad1, pad0, pad1])
+        x = F.conv2d(x, kernel, groups=self.channels, bias=fused_bias, padding=[pad0, pad1])
 
         return x
 
@@ -277,18 +278,7 @@ class StyleConvBase(pl.LightningModule):
                                             lr_mul=lr_mul)
         self.bias = nn.Parameter(torch.zeros(out_channels))
 
-    # def bias_and_activation(self, x: torch.Tensor) -> torch.Tensor:
-    #     bias = self.bias
-    #     scale = 2 ** 0.5 # TODO: check it
-
-    #     return F.leaky_relu(x + bias, negative_slope=0.2, inplace=False) * scale
-
-    def activation(self, x: torch.Tensor) -> torch.Tensor:
-        scale = 2 ** 0.5 # TODO: check it
-
-        return F.leaky_relu(x, negative_slope=0.2, inplace=False) * scale
-
-
+        self.activation = ScaledLeakyReLU(0.2, inplace=True)
 
 class StyleConv(StyleConvBase):
     def __init__(self, 
@@ -334,6 +324,7 @@ class StyleConvUp(StyleConvBase):
 
         self.conv = ModTransposedConv2d(in_channels, out_channels, filter_size, stride=2)
         self.filter_bilinear = BilinearFilter(out_channels, scaling_factor= 2, padding=1)
+        
         self.inject_noise = NoiseInjection()
 
 
@@ -467,11 +458,17 @@ class AddStdChannel(pl.LightningModule):
         stddev = stddev.repeat(group, 1, height, width)
         return torch.cat([x, stddev], 1)
 
+# @torch.jit.script
+# def fused_leaky_relu(x):
+#     return x * 0.5 * (1.0 + torch.erf(x / 1.41421))      
+
 class ScaledLeakyReLU(nn.LeakyReLU):
     def __init__(self, negative_slope: float, inplace: bool = False, scale: Optional[float] = math.sqrt(2)) -> None:
-        super().__init__(negative_slope=negative_slope, inplace=inplace)
+        super().__init__(negative_slope=negative_slope, inplace = inplace)
 
         self.scale = scale
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return super().forward(x) * self.scale
+        x = x.mul_(self.scale)
+        return super().forward(x) 
+
