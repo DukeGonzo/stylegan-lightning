@@ -15,6 +15,9 @@ from models.generator import SynthesisNetwork, AuxiliaryL2Projector
 from models.critic import CriticNetwork
 from models.mapping_network import MappingNetwork
 import numpy as np
+import conv2d_gradfix
+
+conv2d_gradfix.enabled = True
 
 class GanTask(pl.LightningModule):
     def __init__(self,
@@ -81,7 +84,9 @@ class GanTask(pl.LightningModule):
         mean_path_length = self._mean_path_length
         
         noise = torch.randn_like(fake_img, device=self.device) / math.sqrt(fake_img.shape[2] * fake_img.shape[3])
-        grad, = autograd.grad(outputs=(fake_img * noise).sum(), inputs=latents, retain_graph=True, create_graph=True)
+
+        with conv2d_gradfix.no_weight_gradients():
+            grad, = autograd.grad(outputs=(fake_img * noise).sum(), inputs=latents, retain_graph=True, create_graph=True)
         path_lengths = torch.sqrt(grad.pow(2).sum(2).mean(1))
 
         path_mean = mean_path_length + decay * (path_lengths.mean() - mean_path_length)
@@ -214,7 +219,7 @@ class GanTask(pl.LightningModule):
         # path_loss = self.ppl_weight * path_loss
         # generator_loss += path_loss
 
-        if batch_idx % self.ppl_reg_every == 0: # TODO: Check it! Rosinality line 258. For some reasons guy zeroing grads and making extra step
+        if batch_idx % self.ppl_reg_every == 0: 
             path_loss, path_lengths = self.ppl_regularization(fake_images, latents)
             self.log('path_lengths', path_lengths.mean(), prog_bar=True)
 

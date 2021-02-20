@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
-
+import conv2d_gradfix
 
 class ConstantLayer(pl.LightningModule):
     def __init__(self, channel, size=4):
@@ -145,7 +145,7 @@ class ModConv2d(ModConvBase):
             fused_bias = fused_bias.expand(batch_size, -1).flatten()
 
         padding = self._get_same_padding(h)
-        x = F.conv2d(x, kernel, padding=padding, groups=batch_size, bias=fused_bias)
+        x = conv2d_gradfix.conv2d(x, kernel, padding=padding, groups=batch_size, bias=fused_bias)
 
         return x.view(batch_size, self.out_channels, h, w)
 
@@ -191,7 +191,7 @@ class ModTransposedConv2d(ModConvBase):
             # fused_bias = torch.repeat_interleave(fused_bias, batch_size)
             fused_bias = fused_bias.expand(batch_size, -1).flatten()
 
-        x = F.conv_transpose2d(x, kernel, padding=0, stride=2, groups=batch_size, bias=fused_bias) # TODO: remove hardcode, calculate padding properly
+        x = conv2d_gradfix.conv_transpose2d(x, kernel, padding=0, stride=2, groups=batch_size, bias=fused_bias) # TODO: remove hardcode, calculate padding properly
         _,_, h,w = x.shape
         return x.view(batch_size, self.out_channels, h, w)
 
@@ -257,7 +257,7 @@ class BilinearFilter(pl.LightningModule):
         pad0, pad1 = self.pad0, self.pad1
        
         # x = F.pad(x, [pad0, pad1, pad0, pad1])
-        x = F.conv2d(x, kernel, groups=self.channels, bias=fused_bias, padding=[pad0, pad1])
+        x = conv2d_gradfix.conv2d(x, kernel, groups=self.channels, bias=fused_bias, padding=[pad0, pad1])
 
         return x
 
@@ -431,7 +431,7 @@ class EqualizedConv(EqualizedLrLayer):
         else:
             padding = self.padding 
 
-        x = F.conv2d(x, 
+        x = conv2d_gradfix.conv2d(x, 
                      weight = kernel, 
                      bias = self.bias,
                      stride=self.stride,
