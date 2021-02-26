@@ -85,13 +85,12 @@ class GanTask(pl.LightningModule):
         
         noise = torch.randn_like(fake_img, device=self.device) / math.sqrt(fake_img.shape[2] * fake_img.shape[3])
 
-        with conv2d_gradfix.no_weight_gradients():
-            grad, = autograd.grad(outputs=(fake_img * noise).sum(), inputs=latents, retain_graph=True, create_graph=True)
-        path_lengths = torch.sqrt(grad.pow(2).sum(2).mean(1))
+        grad, = autograd.grad(outputs=(fake_img * noise).sum(), inputs=latents, retain_graph=True, create_graph=True, only_inputs=True)
+        path_lengths = torch.sqrt(grad.square().sum(2).mean(1))
 
         path_mean = mean_path_length + decay * (path_lengths.mean() - mean_path_length)
 
-        path_penalty = (path_lengths - path_mean).pow(2).mean()
+        path_penalty = (path_lengths - path_mean).square().mean()
 
         # TODO: maybe this side effect is not a good idea
         self._mean_path_length = path_mean.detach()
@@ -224,7 +223,7 @@ class GanTask(pl.LightningModule):
             self.log('path_lengths', path_lengths.mean(), prog_bar=True)
 
             generator_loss += self.ppl_weight * self.ppl_reg_every * path_loss
-        
+            
         self.manual_backward(generator_loss, generator_opt)
         generator_opt.step()
 
