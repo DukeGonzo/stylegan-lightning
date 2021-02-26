@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader, WeightedRandomSampler
 import torchvision
 from torchvision import transforms
 from torchvision.datasets import ImageFolder
+from torchvision.transforms.transforms import RandomHorizontalFlip
 
 
 
@@ -32,10 +33,11 @@ class DataModule(pl.LightningDataModule):
 
         self._transforms = transforms.Compose(
             [
-                transforms.Resize(512), # TODO skip if dump_on_disk 
-                transforms.CenterCrop(512),
+                transforms.Resize(resolution), # TODO skip if dump_on_disk 
+                transforms.CenterCrop(resolution),
+                transforms.RandomHorizontalFlip(),
                 transforms.ToTensor(),
-                transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+                transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5], inplace=True),
             ]
         )
 
@@ -83,7 +85,12 @@ class DataModule(pl.LightningDataModule):
         self.sampler = sampler
 
     def train_dataloader(self):
-        return DataLoader(self.dataset, batch_size=self.batch_size, sampler=self.sampler, num_workers=self.number_of_workers, pin_memory = True)
+        return DataLoader(self.dataset, 
+        batch_size=self.batch_size, 
+        drop_last = True,
+        sampler=self.sampler, 
+        num_workers=self.number_of_workers, 
+        pin_memory = True)
 
     def val_dataloader(self):
         raise NotImplementedError()
