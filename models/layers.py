@@ -223,8 +223,9 @@ class BilinearFilter(pl.LightningModule):
         kernel = self._make_kernel(kernel)
 
         kernel *= (self.scaling_factor ** 2)
+        kernel = kernel[None, None, :, :].expand((self.channels, -1, -1, -1))
 
-        self.register_buffer('kernel', kernel[None, None, :, :].expand((self.channels, -1, -1, -1))) # TODO: maybe it's a not good idea
+        self.register_buffer('kernel', kernel, persistent = False) # TODO: maybe it's a not good idea
 
         if padding == 'SAME':
             self.pad0, self.pad1 = self._calculate_padding()
