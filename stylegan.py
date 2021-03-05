@@ -7,11 +7,12 @@ import random
 import torch
 from torch import optim, nn
 from torch import autograd
+from torch.autograd.grad_mode import no_grad
 from torch.nn import functional as F
 import pytorch_lightning as pl
 from torch.nn.modules import distance
 
-from models.generator import SynthesisNetwork, AuxiliaryL2Projector
+from models.generator import SynthesisNetwork
 from models.critic import CriticNetwork
 from models.mapping_network import MappingNetwork
 import numpy as np
@@ -25,7 +26,9 @@ class GanTask(pl.LightningModule):
                 ppl_reg_every: int = 4,
                 penalize_d_every: int =16,
                 ppl_weight: float = 2,
-                resolution=512
+                resolution: int = 512,
+                use_ema: bool = True,
+                ema_beta: float = 0.99
                 ):
         super().__init__()
         self.gamma = gamma # TODO: check the value
@@ -33,18 +36,23 @@ class GanTask(pl.LightningModule):
         self.penalize_d_every = penalize_d_every
         self.ppl_weight = ppl_weight
         self.resolution = resolution
+        self.use_ema = use_ema
 
         self._mean_path_length = 0
 
         self.mapping_net = MappingNetwork(input_size = 512, state_size= 512, latent_size = 512, label_size = 2, lr_mul = 0.01)
         self.synthesis_net = SynthesisNetwork(resolution=resolution, latent_size=512, channel_multiplier=1)
         self.critic_net = CriticNetwork(resolution=resolution, label_size=2, channel_multiplier=1)
-        # self.auxiliary_projector = AuxiliaryL2Projector(lr_mul=1)
+
+        if use_ema:
+            import copy
+            self.synthesis_net_ema = copy.deepcopy(self.synthesis_net).eval()
+            self.ema_beta = ema_beta
 
     def generate_latents(self, batch_size: int, labels: Optional[torch.Tensor]) -> torch.Tensor:
         # sample noise
         z = torch.randn(batch_size, self.mapping_net.input_size, device=self.device) 
-        z = z.type_as(self.synthesis_net.style_conv.bias) #TODO: not sure about this gonnokod
+        z = z.type_as(self.synthesis_net.style_conv.bias) #TODO: not sure about this govnokod
 
         w = self.mapping_net.forward(z, labels)
 
@@ -145,9 +153,6 @@ class GanTask(pl.LightningModule):
         self.log('real_scores', real_scores.mean(), prog_bar=True)
         self.log('fake_scores', fake_scores_no_gen.mean(), prog_bar=True)
 
-
-
-
         #add gradient penalty
         if batch_idx % self.penalize_d_every == 0:
             # real_images.requires_grad_(True)
@@ -158,35 +163,11 @@ class GanTask(pl.LightningModule):
 
             self.log('r1_loss', r1_loss, prog_bar=True)
             critic_loss = critic_loss + r1_loss
-            # self.manual_backward(r1_loss, critic_opt_reg)
-            # critic_opt_reg.step()
-            # critic_opt_reg.zero_grad(set_to_none=True)
-            # real_images.requires_grad_(False)
 
         self.log('critic_loss', critic_loss, prog_bar=True)
         self.manual_backward(critic_loss, critic_opt)
         critic_opt.step()
         critic_opt.zero_grad(set_to_none=True)
-
-
-        # for n, p in self.critic_net.named_parameters():
-        #         # if torch.any(torch.isnan(p.grad)):
-        #         print(n)
-        #         print(p.grad)
-
-        # raise ValueError('YEBAT')
-
-
-
-        # critic_grad = np.mean([torch.linalg.norm(i.grad).item() for i in self.critic_net.parameters()])
-        # self.log('critic_grad', critic_grad, prog_bar=True)
-
-        # synthesis_grad_crit = np.mean([torch.linalg.norm(i.grad).item() for i in self.synthesis_net.parameters()])
-        # self.log('synthesis_grad_crit', synthesis_grad_crit, prog_bar=True)
-
-        # mapping_net_grad_crit = np.mean([torch.linalg.norm(i.grad).item() for i in self.mapping_net.parameters()])
-        # self.log('mapping_net_grad_crit', mapping_net_grad_crit, prog_bar=True)
-
 
         # DEAL WITH GENERATOR
         self.critic_net.requires_grad_(False)
@@ -199,25 +180,6 @@ class GanTask(pl.LightningModule):
 
         self.log('generator_loss', generator_loss, prog_bar=True)
 
-
-        ###### SHITTY PPL
-        # if batch_idx > 32:
-        # projection = self.auxiliary_projector.forward(activations[-1])
-        # permutation = torch.randperm(batch_size)
-        # flatents = torch.flatten(latents, 1)
-        # latent_distances = torch.pairwise_distance(flatents, flatents[permutation])
-        # projection_distances = torch.pairwise_distance(projection, projection[permutation])
-        # distance_regularization = F.mse_loss(latent_distances, projection_distances)
-
-        # self.log('distance_reg', distance_regularization, prog_bar=True)
-# 
-        # generator_loss += 0.0001 * distance_regularization
-
-        # path_loss, path_lengths = self.ppl_regularization(fake_images[0], latents[0])
-        # self.log('path_lengths', path_lengths.mean(), prog_bar=True)
-        # path_loss = self.ppl_weight * path_loss
-        # generator_loss += path_loss
-
         if batch_idx % self.ppl_reg_every == 0: 
             path_loss, path_lengths = self.ppl_regularization(fake_images, latents)
             self.log('path_lengths', path_lengths.mean(), prog_bar=True)
@@ -227,20 +189,11 @@ class GanTask(pl.LightningModule):
         self.manual_backward(generator_loss, generator_opt)
         generator_opt.step()
 
-        # critic_grad_gen = np.mean([torch.linalg.norm(i.grad).item() for i in self.critic_net.parameters()])
-        # self.log('critic_grad_gen', critic_grad_gen, prog_bar=True)
-
-        # synthesis_grad_gen = np.mean([torch.linalg.norm(i.grad).item() for i in self.synthesis_net.parameters()])
-        # self.log('synthesis_grad_gen', synthesis_grad_gen, prog_bar=True)
-
-        # mapping_net_grad_gen = np.mean([torch.linalg.norm(i.grad).item() for i in self.mapping_net.parameters()])
-        # self.log('mapping_net_grad_gen', mapping_net_grad_gen, prog_bar=True)
-
         generator_opt.zero_grad(set_to_none=True)
 
-        # add ppl penalty
-
-
-
+        if self.use_ema:
+            with torch.no_grad():
+                for p_ema, p in zip(self.synthesis_net_ema.parameters(), self.synthesis_net.parameters()):
+                    p_ema.copy_(p.lerp(p_ema, self.ema_beta))
 
         return [critic_loss, generator_loss]
