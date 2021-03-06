@@ -79,12 +79,7 @@ class CriticNetwork(pl.LightningModule):
         x =self.activation(x)
         
         x = self.blocks(x)
-        # activations = [x]
-        # for block in self.blocks:
-            # x = block(x)
-            # activations.append(x)
-        # x = checkpoint_sequential(self.blocks, 2, x)
-
+       
         x = self.add_std_channel.forward(x)
         x = self.conv_final.forward(x)
         x = self.activation(x)
@@ -96,13 +91,10 @@ class CriticNetwork(pl.LightningModule):
             x = torch.mean(x * label, dim = -1, keepdim=True)
 
         if return_activations:
+            raise NotImplementedError()
             return x, None
             
         return x
-
-# @torch.jit.script
-# def fused_shortcut(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-#     return (x + y) / math.sqrt(2)
 
 class CriticBlock(pl.LightningModule):
     def __init__(self, 
