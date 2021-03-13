@@ -1,8 +1,7 @@
 from typing import Optional, List
-import numpy as np
+import math
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import pytorch_lightning as pl
 from . import layers
 
@@ -48,7 +47,7 @@ class SynthesisNetwork(pl.LightningModule):
                 
         super().__init__()
         
-        log_res = np.log2(resolution)
+        log_res = math.log2(resolution)
         assert log_res > 1 and (log_res * 10) % 10 == 0, f'resolution must be a power of 2.'
         log_res = int(log_res)
         self.resolution = resolution
@@ -124,29 +123,3 @@ class SynthesisNetwork(pl.LightningModule):
             i += 2
 
         return rgb
-
-class AuxiliaryL2Projector(pl.LightningModule):
-    def __init__(self, 
-                in_channels: int = 512,
-                output_size: int = 512,
-                lr_mul: int = 0.1): #TODO: TO Config?):
-                
-        super().__init__()
-
-        self.conv = layers.EqualizedConv(in_channels=in_channels, 
-                                      out_channels=output_size,
-                                      kernel_size=3,
-                                      padding=1,
-                                      stride=2,
-                                      bias = True, lr_mul= lr_mul)
-
-        self.head = nn.Sequential(
-            layers.EqualizedLinear(output_size * 4, output_size, lr_mul= lr_mul),
-            layers.ScaledLeakyReLU(negative_slope=0.2, inplace=True),
-            layers.EqualizedLinear(output_size, output_size, lr_mul= lr_mul)
-            )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.conv.forward(x)
-        x = torch.flatten(x, start_dim=1)
-        return self.head(x)

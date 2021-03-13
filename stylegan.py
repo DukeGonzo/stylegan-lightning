@@ -1,21 +1,18 @@
 from itertools import chain
 import math
-from typing import Optional
+from typing import Optional, Tuple
 import random
 
 
 import torch
-from torch import optim, nn
+from torch import optim
 from torch import autograd
-from torch.autograd.grad_mode import no_grad
 from torch.nn import functional as F
 import pytorch_lightning as pl
-from torch.nn.modules import distance
 
 from models.generator import SynthesisNetwork
 from models.critic import CriticNetwork
 from models.mapping_network import MappingNetwork
-import numpy as np
 import conv2d_gradfix
 
 conv2d_gradfix.enabled = True
@@ -24,11 +21,13 @@ class GanTask(pl.LightningModule):
     def __init__(self,
                 gamma: float = 10,
                 ppl_reg_every: int = 4,
-                penalize_d_every: int =16,
+                penalize_d_every: int = 16,
                 ppl_weight: float = 2,
                 resolution: int = 512,
                 use_ema: bool = True,
-                ema_beta: float = 0.99
+                ema_beta: float = 0.99,
+                latent_size: int = 512,
+                label_size: int = 2,
                 ):
         super().__init__()
         self.gamma = gamma # TODO: check the value
@@ -37,12 +36,12 @@ class GanTask(pl.LightningModule):
         self.ppl_weight = ppl_weight
         self.resolution = resolution
         self.use_ema = use_ema
-
         self._mean_path_length = 0
+        self.label_size = label_size
 
-        self.mapping_net = MappingNetwork(input_size = 512, state_size= 512, latent_size = 512, label_size = 2, lr_mul = 0.01)
-        self.synthesis_net = SynthesisNetwork(resolution=resolution, latent_size=512, channel_multiplier=1)
-        self.critic_net = CriticNetwork(resolution=resolution, label_size=2, channel_multiplier=1)
+        self.mapping_net = MappingNetwork(input_size = 512, state_size= 512, latent_size = latent_size, label_size = label_size, lr_mul = 0.01)
+        self.synthesis_net = SynthesisNetwork(resolution=resolution, latent_size=latent_size, channel_multiplier=1)
+        self.critic_net = CriticNetwork(resolution=resolution, label_size = label_size, channel_multiplier=1)
 
         if use_ema:
             import copy
@@ -57,9 +56,8 @@ class GanTask(pl.LightningModule):
         w = self.mapping_net.forward(z, labels)
 
         return w[:, None, :].expand(-1, self.synthesis_net.num_layers, -1)
-        # return torch.repeat_interleave(w[:, None, :], self.synthesis_net.num_layers, dim=1)
 
-    def forward(self, batch_size: int, labels: Optional[torch.Tensor], mix_prob: float = 0.9) -> torch.Tensor:
+    def forward(self, batch_size: int, labels: Optional[torch.Tensor], mix_prob: float = 0.9) -> Tuple[torch.Tensor, torch.Tensor]:
         w_plus = self.generate_latents(batch_size, labels)
         
         if mix_prob > 0 and random.random() < mix_prob: 
@@ -88,7 +86,7 @@ class GanTask(pl.LightningModule):
 
         return grad_penalty.mean()
 
-    def ppl_regularization(self, fake_img: torch.Tensor, latents: torch.Tensor, decay: float=0.01) -> torch.Tensor:
+    def ppl_regularization(self, fake_img: torch.Tensor, latents: torch.Tensor, decay: float=0.01) -> Tuple[torch.Tensor, torch.Tensor]:
         mean_path_length = self._mean_path_length
         
         noise = torch.randn_like(fake_img, device=self.device) / math.sqrt(fake_img.shape[2] * fake_img.shape[3])
@@ -109,17 +107,8 @@ class GanTask(pl.LightningModule):
          
         generator_opt = optim.Adam(chain(self.synthesis_net.parameters(), self.mapping_net.parameters()), lr=0.0025, betas=(0.0, 0.99))
         critic_opt = optim.Adam(self.critic_net.parameters(), lr=0.0025, betas=(0.0, 0.99))
-
-        critic_opt_reg = optim.Adam(self.critic_net.parameters(), lr=0.0025, betas=(0.0, 0.99))
-
         
-
-        # gen_scheduler = {'scheduler': optim.lr_scheduler.ExponentialLR(generator_opt, 0.99),
-        #          'interval': 'step'} 
-        # critic_scheduler = {'scheduler': optim.lr_scheduler.ExponentialLR(critic_opt, 0.99),
-        #          'interval': 'step'}   
-        
-        return [generator_opt, critic_opt, critic_opt_reg] #, [gen_scheduler, critic_scheduler]
+        return [generator_opt, critic_opt] 
 
     def mix_latents(self, w: torch.Tensor, w2: torch.Tensor) -> torch.Tensor:
         layer_num = w.shape[1]
@@ -138,7 +127,7 @@ class GanTask(pl.LightningModule):
 
 
         # get optimizers 
-        (generator_opt, critic_opt, critic_opt_reg) = self.optimizers()
+        (generator_opt, critic_opt) = self.optimizers() # type: ignore  # Pylance bug
 
         # DEAL WITH CRITIQUE
         self.critic_net.requires_grad_(True)
@@ -155,8 +144,6 @@ class GanTask(pl.LightningModule):
 
         #add gradient penalty
         if batch_idx % self.penalize_d_every == 0:
-            # real_images.requires_grad_(True)
-            # real_scores = self.critic_net.forward(real_images, labels)
             r1_penalty = self.r1_penalty(real_scores, real_images)
             self.log('r1_penalty', r1_penalty, prog_bar=True)
             r1_loss = self.gamma * self.penalize_d_every / 2. * r1_penalty
@@ -165,9 +152,9 @@ class GanTask(pl.LightningModule):
             critic_loss = critic_loss + r1_loss
 
         self.log('critic_loss', critic_loss, prog_bar=True)
-        self.manual_backward(critic_loss, critic_opt)
+        self.manual_backward(critic_loss, critic_opt) # type: ignore  # Pylance bug
         critic_opt.step()
-        critic_opt.zero_grad(set_to_none=True)
+        critic_opt.zero_grad(set_to_none=True) # type: ignore  # Pylance bug
 
         # DEAL WITH GENERATOR
         self.critic_net.requires_grad_(False)
@@ -175,7 +162,7 @@ class GanTask(pl.LightningModule):
         self.mapping_net.requires_grad_(True)
 
         # make optimization steps
-        fake_scores, activations = self.critic_net.forward(fake_images, labels, return_activations=True)
+        fake_scores = self.critic_net.forward(fake_images, labels, return_activations=False)
         generator_loss = self.generator_non_saturating_gan_loss(fake_scores)
 
         self.log('generator_loss', generator_loss, prog_bar=True)
@@ -186,10 +173,10 @@ class GanTask(pl.LightningModule):
 
             generator_loss += self.ppl_weight * self.ppl_reg_every * path_loss
             
-        self.manual_backward(generator_loss, generator_opt)
+        self.manual_backward(generator_loss, generator_opt) # type: ignore  # Pylance bug
         generator_opt.step()
 
-        generator_opt.zero_grad(set_to_none=True)
+        generator_opt.zero_grad(set_to_none=True) # type: ignore  # Pylance bug
 
         if self.use_ema:
             with torch.no_grad():
