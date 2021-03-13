@@ -76,7 +76,7 @@ class CriticNetwork(pl.LightningModule):
 
     def forward(self, x: torch.Tensor, label: Optional[torch.Tensor], return_activations: bool = False) -> torch.Tensor:
         x = self.conv.forward(x)
-        x =self.activation(x)
+        x = self.activation(x)
         
         x = self.blocks(x)
        

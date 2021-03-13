@@ -56,7 +56,6 @@ class Projector():
         self._transforms = transforms.Compose(
             [
                 transforms.Resize(gan.resolution), # TODO skip if dump_on_disk 
-                transforms.CenterCrop(gan.resolution),
                 transforms.ToTensor(),
                 transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5], inplace=True),
             ]
@@ -75,7 +74,10 @@ class Projector():
 
     def _downsample_to_vgg(self, image: torch.Tensor):
         x = F.interpolate(image, (256, 256), mode='bilinear', align_corners=True)
-        return (x - self._vgg_mean) / self._vgg_std
+        return x
+
+    def _normalize_for_vgg(self, image: torch.Tensor):
+        return ((image + 1) / 2 - self._vgg_mean) / self._vgg_std
 
     @staticmethod
     def whitening(tensor: torch.Tensor) -> torch.Tensor:
@@ -90,6 +92,7 @@ class Projector():
                 label: Optional[int], 
                 lpips_weight: float = 1.0,
                 vgg_weight: float = 1.0,
+                critic_weight: float = 1.0,
                 vgg_layer: int = 15,
                 lr_init: float = 0.1,
                 noise_weight: float = 0.05,
@@ -140,11 +143,18 @@ class Projector():
 
             if vgg_weight > 0:
                 vgg_subnet = self._vgg.features[: vgg_layer]
+                fake_images_vgg = self._normalize_for_vgg(fake_images_vgg)
+                norm_source_image_vgg = self._normalize_for_vgg(source_image_vgg)
                 fake_features = self.whitening(vgg_subnet.forward(fake_images_vgg))
-                source_features = self.whitening(vgg_subnet.forward(source_image_vgg))
+                source_features = self.whitening(vgg_subnet.forward(norm_source_image_vgg))
                 vgg_loss_value = torch.sum(F.mse_loss(fake_features, source_features))
                 loss += vgg_weight * vgg_loss_value
                 message += f', vgg_loss: {vgg_loss_value.item()}'
+
+            if critic_weight > 0:
+                critic_score = self.gan.critic_net.forward(fake_images, F.one_hot(torch.ones((1,)).long() * label, self._num_lables).to(self.gan.device))
+                loss -= critic_weight * torch.sum(critic_score)
+                message += f', critic_score: {critic_score.item()}'
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
