@@ -2,7 +2,6 @@ from typing import Optional, List
 import math
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import pytorch_lightning as pl
 from . import layers
 
