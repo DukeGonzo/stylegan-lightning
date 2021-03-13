@@ -124,3 +124,4 @@ class SynthesisNetwork(pl.LightningModule):
             i += 2
 
         return rgb
+    
