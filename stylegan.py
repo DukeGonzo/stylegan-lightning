@@ -1,21 +1,18 @@
 from itertools import chain
 import math
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple
 import random
 
 
 import torch
-from torch import optim, nn
+from torch import optim
 from torch import autograd
-from torch.autograd.grad_mode import no_grad
 from torch.nn import functional as F
 import pytorch_lightning as pl
-from torch.nn.modules import distance
 
 from models.generator import SynthesisNetwork
 from models.critic import CriticNetwork
 from models.mapping_network import MappingNetwork
-import numpy as np
 import conv2d_gradfix
 
 conv2d_gradfix.enabled = True

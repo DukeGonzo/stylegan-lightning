@@ -1,5 +1,5 @@
 from typing import Optional, List
-import numpy as np
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -48,7 +48,7 @@ class SynthesisNetwork(pl.LightningModule):
                 
         super().__init__()
         
-        log_res = np.log2(resolution)
+        log_res = math.log2(resolution)
         assert log_res > 1 and (log_res * 10) % 10 == 0, f'resolution must be a power of 2.'
         log_res = int(log_res)
         self.resolution = resolution
@@ -124,3 +124,4 @@ class SynthesisNetwork(pl.LightningModule):
             i += 2
 
         return rgb
+        
