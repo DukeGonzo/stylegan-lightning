@@ -8,6 +8,7 @@ import torch
 from torch import optim
 from torch import autograd
 from torch.nn import functional as F
+import torch.nn as nn
 import pytorch_lightning as pl
 
 from models.generator import SynthesisNetwork
@@ -28,6 +29,8 @@ class GanTask(pl.LightningModule):
                 ema_beta: float = 0.99,
                 latent_size: int = 512,
                 label_size: int = 2,
+                use_top_k: bool = True, # https://arxiv.org/abs/2002.06224
+                top_k_decay_rate: float = 0.94
                 ):
         super().__init__()
         self.gamma = gamma # TODO: check the value
@@ -38,6 +41,9 @@ class GanTask(pl.LightningModule):
         self.use_ema = use_ema
         self._mean_path_length = 0
         self.label_size = label_size
+        self.use_top_k = use_top_k
+        self.top_k_decay_rate = top_k_decay_rate
+        self.register_buffer('k', torch.Tensor(1.0), persistent=True)
 
         self.mapping_net = MappingNetwork(input_size = 512, state_size= 512, latent_size = latent_size, label_size = label_size, lr_mul = 0.01)
         self.synthesis_net = SynthesisNetwork(resolution=resolution, latent_size=latent_size, channel_multiplier=1)
@@ -163,6 +169,12 @@ class GanTask(pl.LightningModule):
 
         # make optimization steps
         fake_scores = self.critic_net.forward(fake_images, labels, return_activations=False)
+
+        if self.use_top_k: 
+            self.k *= self.top_k_decay_rate
+            k = math.ceil(max(self.k.item(), 0.5) * batch_size) 
+            fake_scores, _ = torch.topk(fake_scores, k, dim=0)
+
         generator_loss = self.generator_non_saturating_gan_loss(fake_scores)
 
         self.log('generator_loss', generator_loss, prog_bar=True)

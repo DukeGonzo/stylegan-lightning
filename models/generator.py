@@ -21,7 +21,6 @@ class ModulatedBlock(pl.LightningModule):
         self.style_conv_up = layers.StyleConvUp(latent_size, in_channels, out_channels, filter_size = 3)
         self.style_conv = layers.StyleConv(latent_size, out_channels, out_channels, filter_size = 3)
         self.to_rgb = layers.ToRgb(latent_size, out_channels)
-        # self.upscale_shortcut = nn.Sequential(layers.UpsampleZeros(), layers.BilinearFilter(3, scaling_factor=2))
         self.upscale_shortcut = nn.UpsamplingBilinear2d(scale_factor=2)
 
 
