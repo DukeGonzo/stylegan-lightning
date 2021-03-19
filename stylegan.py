@@ -43,7 +43,7 @@ class GanTask(pl.LightningModule):
         self.label_size = label_size
         self.use_top_k = use_top_k
         self.top_k_decay_rate = top_k_decay_rate
-        self.register_buffer('k', torch.Tensor(1.0), persistent=True)
+        self.register_buffer('k', torch.scalar_tensor(1.0), persistent=True)
 
         self.mapping_net = MappingNetwork(input_size = 512, state_size= 512, latent_size = latent_size, label_size = label_size, lr_mul = 0.01)
         self.synthesis_net = SynthesisNetwork(resolution=resolution, latent_size=latent_size, channel_multiplier=1)
@@ -171,8 +171,7 @@ class GanTask(pl.LightningModule):
         fake_scores = self.critic_net.forward(fake_images, labels, return_activations=False)
 
         if self.use_top_k: 
-            self.k *= self.top_k_decay_rate
-            k = math.ceil(max(self.k.item(), 0.5) * batch_size) 
+            k = math.ceil(max(self.k.item(), 0.5) * batch_size)
             fake_scores, _ = torch.topk(fake_scores, k, dim=0)
 
         generator_loss = self.generator_non_saturating_gan_loss(fake_scores)
@@ -196,3 +195,7 @@ class GanTask(pl.LightningModule):
                     p_ema.copy_(p.lerp(p_ema, self.ema_beta))
 
         return [critic_loss, generator_loss]
+
+    def training_epoch_end(self, _) -> None:
+        if self.use_top_k: 
+            self.k *= self.top_k_decay_rate
