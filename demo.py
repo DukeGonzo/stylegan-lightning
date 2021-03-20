@@ -52,37 +52,39 @@ def make_image(tensor):
 
 gan = load_model()
 latent_plus_mean, fake_latents = get_latents()
-X_comp_norm = load_pca_vectors()
+PCA_vectors = load_pca_vectors()
 
+indexes_count = 5
+shifts = []
 
-index = st.sidebar.slider('index', 0, 511, 0, 1)
-shift = st.sidebar.slider('shift', -5.0, 5.0, 0.0, 0.5)
-index_2 = st.sidebar.slider('index2', 0, 511, 0, 1)
-shift_2 = st.sidebar.slider('shift2', -5.0, 5.0, 0.0, 0.5)
-index_3 = st.sidebar.slider('index3', 0, 511, 0, 1)
-shift_3 = st.sidebar.slider('shift3', -5.0, 5.0, 0.0, 0.5)
-latent_index = st.sidebar.slider('latent_index', 0, len(fake_latents) - 1, 0, 1)
-artefacts_shift = st.sidebar.slider('artefacts_shift', 0.0, 30.0, 0.0, 0.5)
-cari_shift = st.sidebar.slider('cari_shift', 0.0, 12.0, 0.0, 0.5)
-truncation = st.sidebar.slider('truncation', 0.0, 1.0, 0.7, 0.1)
+latent_index = st.sidebar.slider('Face', 0, len(fake_latents) - 1, 0, 1)
+truncation = st.sidebar.slider('Truncation', 0.0, 1.0, 0.7, 0.1)
 
 latent = fake_latents[latent_index]
 latent = latent_plus_mean[0].lerp(latent, truncation)
 
-direction = X_comp_norm[index]
-direction_2 = X_comp_norm[int(index_2)]
-direction_3 = X_comp_norm[int(index_3)]
+shifted_latent = latent
+shifted_latent_minus = latent
 
-shifted_latent = latent + shift * direction + cari_shift * \
-    X_comp_norm[int(0)] - artefacts_shift * X_comp_norm[int(11)]
-shifted_latent_minus = latent - shift * direction + cari_shift * \
-    X_comp_norm[int(0)] - artefacts_shift * X_comp_norm[int(11)]
+for index in range(indexes_count):
+    st.sidebar.subheader(f'Direction {index}')
+    sb_col1, sb_col2, sb_col3 = st.sidebar.beta_columns((1,3,3))
+    is_index_enabled = sb_col1.checkbox('E', True, key=f'enabled_{index}')
+    is_index_fixed = sb_col1.checkbox('F', False, key=f'fixed_{index}')
+    PCA_index = sb_col2.slider('Index', 0, 511, 0, 1, key=f'direction_{index}')
+    shift = sb_col3.slider('Shift', -5.0, 5.0, 0.0, 0.5, key=f'shift_{index}')
 
-shifted_latent += shift_2 * direction_2
-shifted_latent_minus -= shift_2 * direction_2
+    if is_index_enabled:
+        PCA_direction = PCA_vectors[PCA_index]
+        shifted_latent += PCA_direction * shift
+        
+        if is_index_fixed:
+            shifted_latent_minus += PCA_direction * shift
+        else:
+            shifted_latent_minus -= PCA_direction * shift
 
-shifted_latent += shift_3 * direction_3
-shifted_latent_minus -= shift_3 * direction_3
+st.sidebar.text('E - Enable direction')
+st.sidebar.text('F - Shift in the same direction for both images')
 
 latents_ = np.stack([shifted_latent_minus, latent, shifted_latent])
 
@@ -99,6 +101,6 @@ st.title('Demo')
 
 col1, col2, col3 = st.beta_columns(3)
 
-col1.image(out_minus)
-col2.image(src)
-col3.image(img)
+col1.image(out_minus, caption="Shifted in the negative direction")
+col2.image(src, caption="Original")
+col3.image(img, caption="Shifted in the positive direction")
