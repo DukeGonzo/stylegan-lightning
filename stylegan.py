@@ -52,6 +52,7 @@ class GanTask(pl.LightningModule):
         if use_ema:
             import copy
             self.synthesis_net_ema = copy.deepcopy(self.synthesis_net).eval()
+            self.mapping_net_ema = copy.deepcopy(self.mapping_net).eval()
             self.ema_beta = ema_beta
 
     def generate_latents(self, batch_size: int, labels: Optional[torch.Tensor]) -> torch.Tensor:
@@ -192,6 +193,9 @@ class GanTask(pl.LightningModule):
         if self.use_ema:
             with torch.no_grad():
                 for p_ema, p in zip(self.synthesis_net_ema.parameters(), self.synthesis_net.parameters()):
+                    p_ema.copy_(p.lerp(p_ema, self.ema_beta))
+
+                for p_ema, p in zip(self.mapping_net_ema.parameters(), self.mapping_net.parameters()):
                     p_ema.copy_(p.lerp(p_ema, self.ema_beta))
 
         return [critic_loss, generator_loss]
