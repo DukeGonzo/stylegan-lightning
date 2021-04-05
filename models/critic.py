@@ -48,8 +48,7 @@ class CriticNetwork(pl.LightningModule):
 
         in_channels = self.channels[self.resolution]
 
-        self.activation = layers.ScaledLeakyReLU(
-            self._leaky_relu_slope, inplace=True)
+        self.activation = layers.ScaledLeakyReLU(self._leaky_relu_slope, inplace=True)
 
         self.conv = layers.EqualizedConv(in_channels=3,
                                          out_channels=in_channels,
@@ -167,18 +166,14 @@ class CriticBlock(pl.LightningModule):
 
         self._leaky_relu_slope = 0.2
 
-        self.conv = layers.EqualizedConv(
-            in_channels, in_channels, kernel_size=3, bias=True, padding=1)
-        self.activation = layers.ScaledLeakyReLU(
-            self._leaky_relu_slope, inplace=True)
+        self.conv = layers.EqualizedConv(in_channels, in_channels, kernel_size=3, bias=True, padding=1)
+        self.activation = layers.ScaledLeakyReLU(self._leaky_relu_slope, inplace=True)
 
         self.bilinear = layers.BilinearFilter(in_channels, padding=2)
-        self.conv_down = layers.EqualizedConv(
-            in_channels, out_channels, 3, stride=2, bias=True, padding=0)
+        self.conv_down = layers.EqualizedConv(in_channels, out_channels, 3, stride=2, bias=True, padding=0)
 
         self.shortcut_filter = layers.BilinearFilter(in_channels, padding=1)
-        self.shortcut_down = layers.EqualizedConv(
-            in_channels, out_channels, 1, stride=2, bias=False, padding=0)
+        self.shortcut_down = layers.EqualizedConv(in_channels, out_channels, 1, stride=2, bias=False, padding=0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # shortcut = self.shortcut_filter.forward(x)
