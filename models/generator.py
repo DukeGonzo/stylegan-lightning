@@ -132,12 +132,13 @@ class SynthesisNetwork(pl.LightningModule):
         x = self.constant.forward(batch_size)
         x = self.style_conv.forward(x, latent_vectors[:, 0], noise=noise[0])
         rgb = self.to_rgb.forward(x, latent_vectors[:, 1])
+        
         i = 1
         for block in self.blocks:
-            x, rgb = block(x, rgb, latent_vectors[:, i:i+3], noise[i:i+2])
-            i += 2
-
             if target_resolution is not None and rgb.shape[-1] == target_resolution:
                 break
+
+            x, rgb = block(x, rgb, latent_vectors[:, i:i+3], noise[i:i+2])
+            i += 2
 
         return rgb

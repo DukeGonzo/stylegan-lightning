@@ -26,8 +26,7 @@ class CriticNetwork(pl.LightningModule):
         self._leaky_relu_slope = 0.2
 
         log_res = np.log2(resolution)
-        assert log_res > 1 and (
-            log_res * 10) % 10 == 0, f'resolution must be a power of 2.'
+        assert log_res > 1 and (log_res * 10) % 10 == 0, f'resolution must be a power of 2.'
         log_res = int(log_res)
         self.resolution = resolution
 
@@ -105,7 +104,7 @@ class CriticNetwork(pl.LightningModule):
         return x
 
 
-class MultiResolutionCriticNetwork(CriticNetwork):
+class MultiResCriticNetwork(CriticNetwork):
     def __init__(self,
                  resolution: int = 512,
                  label_size: int = 0,
@@ -114,11 +113,11 @@ class MultiResolutionCriticNetwork(CriticNetwork):
                          label_size=label_size,
                          channel_multiplier=channel_multiplier)
 
-        self.multi_inputs = nn.ModuleDict({self.resolution: self.conv})
+        self.multi_inputs = nn.ModuleList([self.conv])
 
         current_resolution = self.resolution
 
-        while current_resolution >= 4:
+        while current_resolution > 4:
             current_resolution //= 2
             out_channels = self.channels[current_resolution]
             conv = layers.EqualizedConv(in_channels=3,
@@ -126,22 +125,22 @@ class MultiResolutionCriticNetwork(CriticNetwork):
                                         kernel_size=1,
                                         padding=0,
                                         bias=True)
-            self.multi_inputs[current_resolution] = conv
+            self.multi_inputs.append(conv)
 
     def forward(self, x: torch.Tensor,
                 label: Optional[torch.Tensor],
-                target_resolution: Optional[int] = None, 
+                target_resolution: Optional[int] = None,
                 return_activations: bool = False) -> torch.Tensor:
 
         if target_resolution is None:
             target_resolution = self.resolution
 
-        start_index = int(np.log2(self.resolution // target_resolution))
+        cutoff_index = int(np.log2(self.resolution // target_resolution))
 
-        x = self.multi_inputs[target_resolution].forward(x)
+        x = self.multi_inputs[cutoff_index].forward(x)
         x = self.activation(x)
 
-        x = self.blocks[start_index:](x)
+        x = self.blocks[cutoff_index:](x)
 
         x = self.add_std_channel.forward(x)
         x = self.conv_final.forward(x)

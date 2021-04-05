@@ -80,11 +80,8 @@ class GanTask(pl.LightningModule):
         return w[:, None, :].expand(-1, self.synthesis_net.num_layers, -1)
 
     def forward(
-        self, 
-        batch_size: int, 
-        labels: Optional[torch.Tensor], 
-        mix_prob: float = 0.9, 
-        target_resolution: Optional[int] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+        self, batch_size: int, labels: Optional[torch.Tensor], mix_prob: float = 0.9, target_resolution: Optional[int] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
             batch_size (int): number of samples
@@ -103,7 +100,7 @@ class GanTask(pl.LightningModule):
             # TODO: consider more radical mixing
             w_plus = self.mix_latents(w_plus, w_plus_)
 
-        return self.synthesis_net.forward(w_plus, None, target_resolution), w_plus
+        return self.synthesis_net.forward(w_plus, target_resolution=target_resolution), w_plus
 
     @staticmethod
     def generator_non_saturating_gan_loss(fake_scores: torch.Tensor) -> torch.Tensor:
@@ -125,7 +122,9 @@ class GanTask(pl.LightningModule):
 
         return grad_penalty.mean()
 
-    def ppl_regularization(self, fake_img: torch.Tensor, latents: torch.Tensor, decay: float = 0.01) -> Tuple[torch.Tensor, torch.Tensor]:
+    def ppl_regularization(
+        self, fake_img: torch.Tensor, latents: torch.Tensor, decay: float = 0.01
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         mean_path_length = self._mean_path_length
 
         noise = torch.randn_like(fake_img, device=self.device) / math.sqrt(fake_img.shape[2] * fake_img.shape[3])
@@ -161,13 +160,12 @@ class GanTask(pl.LightningModule):
         return torch.cat([w[:, :index], w2[:, index:]], dim=1)
 
     def switch_to_critic(self) -> None:
-        """ 
-        disabling gradient propagatation through generator  
+        """
+        disabling gradient propagatation through generator
         """
         self.critic_net.requires_grad_(True)
         self.synthesis_net.requires_grad_(False)
         self.mapping_net.requires_grad_(False)
-        
 
     def switch_to_generator(self) -> None:
         self.critic_net.requires_grad_(False)
@@ -195,13 +193,13 @@ class GanTask(pl.LightningModule):
         get_fake_images = self.forward
         get_critic_scores = self.critic_net.forward
         sampled_resolution = None
-        
+
         if self.use_anycost_gan:
             sampled_resolution_log = np.random.randint(2, self._log_resolution)
             sampled_resolution = 2 ** sampled_resolution_log
             get_fake_images = partial(self.forward, target_resolution=sampled_resolution)
             get_critic_scores = partial(self.critic_net.forward, target_resolution=sampled_resolution)
-            real_images = F.interpolate(real_images, (sampled_resolution, sampled_resolution))
+            real_images = F.interpolate(real_images, (sampled_resolution, sampled_resolution), mode='bilinear', align_corners=True)
 
         fake_images, latents = get_fake_images(batch_size, labels)
 
@@ -210,7 +208,7 @@ class GanTask(pl.LightningModule):
 
         # DEAL WITH CRITIQUE
         self.switch_to_critic()
-        real_images.requires_grad_(True) # needed to perform regularization
+        real_images.requires_grad_(True)  # needed to perform regularization
 
         real_scores = get_critic_scores(real_images, labels)
         fake_scores_no_gen = get_critic_scores(fake_images.detach(), labels)
@@ -264,6 +262,6 @@ class GanTask(pl.LightningModule):
 
         return [critic_loss, generator_loss]
 
-    def training_epoch_end(self, _) -> None:
+    def on_train_epoch_end(self, _) -> None:
         if self.use_top_k:
             self.k *= self.top_k_decay_rate
