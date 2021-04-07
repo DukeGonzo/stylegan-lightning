@@ -195,11 +195,11 @@ class GanTask(pl.LightningModule):
         sampled_resolution = None
 
         if self.use_anycost_gan:
-            sampled_resolution_log = np.random.randint(2, self._log_resolution)
+            sampled_resolution_log = np.random.randint(2, self._log_resolution + 1) # 5 (minimal res) move to config
             sampled_resolution = 2 ** sampled_resolution_log
             get_fake_images = partial(self.forward, target_resolution=sampled_resolution)
             get_critic_scores = partial(self.critic_net.forward, target_resolution=sampled_resolution)
-            real_images = F.interpolate(real_images, (sampled_resolution, sampled_resolution), mode='bilinear', align_corners=True)
+            real_images = F.interpolate(real_images, (sampled_resolution, sampled_resolution), mode='bilinear', align_corners=False)
 
         fake_images, latents = get_fake_images(batch_size, labels)
 
